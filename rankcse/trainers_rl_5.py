@@ -79,8 +79,8 @@ import copy
 from torch.nn.functional import normalize
 
 # Set path to SentEval
-PATH_TO_SENTEVAL = './SentEval'
-PATH_TO_DATA = './SentEval/data'
+PATH_TO_SENTEVAL = "./SentEval"
+PATH_TO_DATA = "./SentEval/data"
 
 # Import SentEval
 sys.path.insert(0, PATH_TO_SENTEVAL)
@@ -89,8 +89,9 @@ import numpy as np
 from datetime import datetime
 from filelock import FileLock
 from rankcse.teachers import Teacher
+
 # RL
-from rankcse.Agent_4 import PolicyNet,Critic,ReplayMemory,optimize_model
+from rankcse.Agent_4 import PolicyNet, Critic, ReplayMemory, optimize_model
 
 import string
 
@@ -101,9 +102,11 @@ logger = logging.get_logger(__name__)
 class CLTrainer(Trainer):
 
     def evaluate(
-            self, eval_dataset: Optional[Dataset] = None, ignore_keys: Optional[List[str]] = None,
-            metric_key_prefix: str = "eval",
-            eval_senteval_transfer: bool = False,
+        self,
+        eval_dataset: Optional[Dataset] = None,
+        ignore_keys: Optional[List[str]] = None,
+        metric_key_prefix: str = "eval",
+        eval_senteval_transfer: bool = False,
     ) -> Dict[str, float]:
 
         # SentEval prepare and batcher
@@ -111,20 +114,14 @@ class CLTrainer(Trainer):
             return
 
         def batcher(params, batch):
-            sentences = [' '.join(s) for s in batch]
+            sentences = [" ".join(s) for s in batch]
 
-            sentences = [ \
-                s + " ." if s.strip()[-1] not in PUNCTUATION else s \
-                for s in sentences \
-                ]
-            sentences = [ \
-                '''This sentence : " ''' + s + ''' " means [MASK] .''' \
-                for s in sentences \
-                ]
+            sentences = [s + " ." if s.strip()[-1] not in PUNCTUATION else s for s in sentences]
+            sentences = ["""This sentence : " """ + s + """ " means [MASK] .""" for s in sentences]
 
             batch = self.tokenizer.batch_encode_plus(
                 sentences,
-                return_tensors='pt',
+                return_tensors="pt",
                 padding=True,
             )
             for k in batch:
@@ -135,41 +132,39 @@ class CLTrainer(Trainer):
             return last_hidden_state.cpu()
 
         # Set params for SentEval (fastmode)
-        params = {'task_path': PATH_TO_DATA, 'usepytorch': True, 'kfold': 5}
-        params['classifier'] = {'nhid': 0, 'optim': 'rmsprop', 'batch_size': 128,
-                                'tenacity': 3, 'epoch_size': 2}
+        params = {"task_path": PATH_TO_DATA, "usepytorch": True, "kfold": 5}
+        params["classifier"] = {"nhid": 0, "optim": "rmsprop", "batch_size": 128, "tenacity": 3, "epoch_size": 2}
 
         se = senteval.engine.SE(params, batcher, prepare)
-        tasks = ['STSBenchmark', 'SICKRelatedness']
+        tasks = ["STSBenchmark", "SICKRelatedness"]
         if eval_senteval_transfer or self.args.eval_transfer:
-            tasks = ['STSBenchmark', 'SICKRelatedness', 'MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']
+            tasks = ["STSBenchmark", "SICKRelatedness", "MR", "CR", "SUBJ", "MPQA", "SST2", "TREC", "MRPC"]
         self.model.eval()
         results = se.eval(tasks)
 
-        stsb_spearman = results['STSBenchmark']['dev']['spearman'][0]
-        sickr_spearman = results['SICKRelatedness']['dev']['spearman'][0]
+        stsb_spearman = results["STSBenchmark"]["dev"]["spearman"][0]
+        sickr_spearman = results["SICKRelatedness"]["dev"]["spearman"][0]
         acc = (stsb_spearman + sickr_spearman) / 2
         rewards = acc - self.model.best_acc
         self.model.first_rewards += 10000 * rewards
         self.model.second_rewards += 10000 * rewards
         if self.model.best_acc:
-          self.model.best_acc = (acc + self.model.best_acc) / 2
+            self.model.best_acc = (acc + self.model.best_acc) / 2
         else:
-          self.model.best_acc = acc
+            self.model.best_acc = acc
         # rewards = acc
         # self.model.first_rewards += 10000 * rewards
         # self.model.second_rewards += 10000 * rewards
 
-        metrics = {"eval_stsb_spearman": stsb_spearman, "eval_sickr_spearman": sickr_spearman,
-                   "eval_avg_sts": (stsb_spearman + sickr_spearman) / 2}
+        metrics = {"eval_stsb_spearman": stsb_spearman, "eval_sickr_spearman": sickr_spearman, "eval_avg_sts": (stsb_spearman + sickr_spearman) / 2}
         logger.info(metrics)
         if eval_senteval_transfer or self.args.eval_transfer:
             avg_transfer = 0
-            for task in ['MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']:
-                avg_transfer += results[task]['devacc']
-                metrics['eval_{}'.format(task)] = results[task]['devacc']
+            for task in ["MR", "CR", "SUBJ", "MPQA", "SST2", "TREC", "MRPC"]:
+                avg_transfer += results[task]["devacc"]
+                metrics["eval_{}".format(task)] = results[task]["devacc"]
             avg_transfer /= 7
-            metrics['eval_avg_transfer'] = avg_transfer
+            metrics["eval_avg_transfer"] = avg_transfer
 
         self.log(metrics)
         return metrics
@@ -192,11 +187,7 @@ class CLTrainer(Trainer):
             metric_value = metrics[metric_to_check]
 
             operator = np.greater if self.args.greater_is_better else np.less
-            if (
-                    self.state.best_metric is None
-                    or self.state.best_model_checkpoint is None
-                    or operator(metric_value, self.state.best_metric)
-            ):
+            if self.state.best_metric is None or self.state.best_model_checkpoint is None or operator(metric_value, self.state.best_metric):
                 output_dir = self.args.output_dir
                 self.state.best_metric = metric_value
                 self.state.best_model_checkpoint = output_dir
@@ -207,7 +198,7 @@ class CLTrainer(Trainer):
                     self.deepspeed.save_checkpoint(output_dir)
 
                 # Save optimizer and scheduler
-               
+
                 if self.sharded_ddp:
                     self.optimizer.consolidate_state_dict()
 
@@ -322,9 +313,7 @@ class CLTrainer(Trainer):
             num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)
             if self.args.max_steps > 0:
                 max_steps = self.args.max_steps
-                num_train_epochs = self.args.max_steps // num_update_steps_per_epoch + int(
-                    self.args.max_steps % num_update_steps_per_epoch > 0
-                )
+                num_train_epochs = self.args.max_steps // num_update_steps_per_epoch + int(self.args.max_steps % num_update_steps_per_epoch > 0)
             else:
                 max_steps = math.ceil(self.args.num_train_epochs * num_update_steps_per_epoch)
                 num_train_epochs = math.ceil(self.args.num_train_epochs)
@@ -369,11 +358,7 @@ class CLTrainer(Trainer):
                 model,
                 device_ids=[self.args.local_rank],
                 output_device=self.args.local_rank,
-                find_unused_parameters=(
-                    not getattr(model.config, "gradient_checkpointing", False)
-                    if isinstance(model, PreTrainedModel)
-                    else True
-                ),
+                find_unused_parameters=(not getattr(model.config, "gradient_checkpointing", False) if isinstance(model, PreTrainedModel) else True),
             )
             # find_unused_parameters breaks checkpointing as per
             # https://github.com/huggingface/transformers/pull/4659#issuecomment-643356021
@@ -390,17 +375,9 @@ class CLTrainer(Trainer):
         if is_torch_tpu_available():
             total_train_batch_size = self.args.train_batch_size * xm.xrt_world_size()
         else:
-            total_train_batch_size = (
-                    self.args.train_batch_size
-                    * self.args.gradient_accumulation_steps
-                    * (torch.distributed.get_world_size() if self.args.local_rank != -1 else 1)
-            )
+            total_train_batch_size = self.args.train_batch_size * self.args.gradient_accumulation_steps * (torch.distributed.get_world_size() if self.args.local_rank != -1 else 1)
 
-        num_examples = (
-            self.num_examples(train_dataloader)
-            if train_dataset_is_sized
-            else total_train_batch_size * self.args.max_steps
-        )
+        num_examples = self.num_examples(train_dataloader) if train_dataset_is_sized else total_train_batch_size * self.args.max_steps
 
         logger.info("***** Running training *****")
         logger.info(f"  Num examples = {num_examples}")
@@ -429,22 +406,16 @@ class CLTrainer(Trainer):
             logger.info(f"  Continuing training from epoch {epochs_trained}")
             logger.info(f"  Continuing training from global step {self.state.global_step}")
             if not self.args.ignore_data_skip:
-                logger.info(
-                    f"  Will skip the first {epochs_trained} epochs then the first {steps_trained_in_current_epoch} "
-                    "batches in the first epoch."
-                )
+                logger.info(f"  Will skip the first {epochs_trained} epochs then the first {steps_trained_in_current_epoch} " "batches in the first epoch.")
 
         # RankCSE - Initialize the teacher
         teacher = None
         if self.args.second_teacher_name_or_path is None:
             if "rank" in self.args.first_teacher_name_or_path:
-                teacher = AutoModel.from_pretrained( \
-                    self.args.first_teacher_name_or_path \
-                    )
+                teacher = AutoModel.from_pretrained(self.args.first_teacher_name_or_path)
                 teacher = teacher.to(self.args.device)
             else:
-                teacher_pooler = ("cls_before_pooler" if (
-                        "simcse" in self.args.first_teacher_name_or_path or "diffcse" in self.args.first_teacher_name_or_path) else "avg")
+                teacher_pooler = "cls_before_pooler" if ("simcse" in self.args.first_teacher_name_or_path or "diffcse" in self.args.first_teacher_name_or_path) else "avg"
                 teacher = Teacher(model_name_or_path=self.args.first_teacher_name_or_path, pooler=teacher_pooler)
             # rank
             sentence_vecs = torch.tensor(np.load(self.model_args.corpus_vecs)).to(teacher.device)
@@ -452,16 +423,12 @@ class CLTrainer(Trainer):
             sentence_vecs = normalize(sentence_vecs, p=2.0, dim=1)
         else:
             if "rank" in self.args.first_teacher_name_or_path:
-                first_teacher = AutoModel.from_pretrained( \
-                    self.args.first_teacher_name_or_path \
-                    )
+                first_teacher = AutoModel.from_pretrained(self.args.first_teacher_name_or_path)
                 first_teacher = first_teacher.to(self.args.device)
             else:
-                first_pooler = ("cls_before_pooler" if (
-                        "simcse" in self.args.first_teacher_name_or_path or "diffcse" in self.args.first_teacher_name_or_path) else "avg")
+                first_pooler = "cls_before_pooler" if ("simcse" in self.args.first_teacher_name_or_path or "diffcse" in self.args.first_teacher_name_or_path) else "avg"
                 first_teacher = Teacher(model_name_or_path=self.args.first_teacher_name_or_path, pooler=first_pooler)
-            second_pooler = ("cls_before_pooler" if (
-                    "simcse" in self.args.second_teacher_name_or_path or "diffcse" in self.args.second_teacher_name_or_path) else "avg")
+            second_pooler = "cls_before_pooler" if ("simcse" in self.args.second_teacher_name_or_path or "diffcse" in self.args.second_teacher_name_or_path) else "avg"
             second_teacher = Teacher(model_name_or_path=self.args.second_teacher_name_or_path, pooler=second_pooler)
             sentence_vecs = torch.tensor(np.load(self.model_args.corpus_vecs)).to(first_teacher.device)
             # sentence_vecs = sentence_vecs.half()
@@ -483,27 +450,26 @@ class CLTrainer(Trainer):
             # Critic_model1.load_state_dict(Critic_model2_params)
 
             # Reinforcement Learning DDPG
-            policy_model1 = PolicyNet(2, 768, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device) # num_teacher是2，embedding_length是768
-            policy_model1_target = PolicyNet(2, 768, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            Critic_model1 = Critic(128, 2, 768, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            Critic_model1_target = Critic(128, 2, 768, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            
-            policy_model2 = PolicyNet(2, 768, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            policy_model2_target = PolicyNet(2, 768, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            Critic_model2 = Critic(128, 2, 768, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            Critic_model2_target = Critic(128, 2, 768, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            # bert 的 embedding是768 bert large 是 1024
+            policy_model1 = PolicyNet(2, 1024, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)  # num_teacher是2，embedding_length是768
+            policy_model1_target = PolicyNet(2, 1024, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            Critic_model1 = Critic(128, 2, 1024, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            Critic_model1_target = Critic(128, 2, 1024, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+
+            policy_model2 = PolicyNet(2, 1024, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            policy_model2_target = PolicyNet(2, 1024, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            Critic_model2 = Critic(128, 2, 1024, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            Critic_model2_target = Critic(128, 2, 1024, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
 
             # 加载模型初始化参数
-           
+
             policy_model2.load_state_dict(policy_model1.state_dict())
             policy_model1_target.load_state_dict(policy_model1.state_dict())
             policy_model2_target.load_state_dict(policy_model1.state_dict())
 
-            
             Critic_model2.load_state_dict(Critic_model1.state_dict())
             Critic_model1_target.load_state_dict(Critic_model1.state_dict())
             Critic_model2_target.load_state_dict(Critic_model1.state_dict())
-
 
         # RL
         tau = 0.1
@@ -517,10 +483,9 @@ class CLTrainer(Trainer):
         #     policy_model.load_state_dict(torch.load("dqn_pong_model"))
         # actor_model = actor(policy_model, tau)
 
-
         if RL_train:
-            policy_model = PolicyNet(2, 768,self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)  # 策略网络
-            
+            policy_model = PolicyNet(2, 768, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)  # 策略网络
+
         if not RL_train:
             # PPO
             # policy_model1.load_state_dict(torch.load('policy_model1.pth'))
@@ -529,17 +494,17 @@ class CLTrainer(Trainer):
             # Critic_model2.load_state_dict(torch.load('Critic_model2.pth'))
 
             # DDPG
-            policy_model1.load_state_dict(torch.load('policy_model1_DDPG.pth'))
-            policy_model1_target.load_state_dict(torch.load('policy_model1_DDPG_target.pth'))
-            
-            policy_model2.load_state_dict(torch.load('policy_model2_DDPG.pth'))
-            policy_model2_target.load_state_dict(torch.load('policy_model2_DDPG_target.pth'))
+            policy_model1.load_state_dict(torch.load("policy_model1_DDPG.pth"))
+            policy_model1_target.load_state_dict(torch.load("policy_model1_DDPG_target.pth"))
 
-            Critic_model1.load_state_dict(torch.load('Critic_model1_DDPG.pth'))
-            Critic_model1_target.load_state_dict(torch.load('Critic_model1_DDPG_target.pth'))
+            policy_model2.load_state_dict(torch.load("policy_model2_DDPG.pth"))
+            policy_model2_target.load_state_dict(torch.load("policy_model2_DDPG_target.pth"))
 
-            Critic_model2.load_state_dict(torch.load('Critic_model2_DDPG.pth'))
-            Critic_model2_target.load_state_dict(torch.load('Critic_model2_DDPG_target.pth'))
+            Critic_model1.load_state_dict(torch.load("Critic_model1_DDPG.pth"))
+            Critic_model1_target.load_state_dict(torch.load("Critic_model1_DDPG_target.pth"))
+
+            Critic_model2.load_state_dict(torch.load("Critic_model2_DDPG.pth"))
+            Critic_model2_target.load_state_dict(torch.load("Critic_model2_DDPG_target.pth"))
 
         samplecnt = 5
         INITIAL_MEMORY = 10000
@@ -549,9 +514,9 @@ class CLTrainer(Trainer):
         first_memory = ReplayMemory(MEMORY_SIZE)
         second_memory = ReplayMemory(MEMORY_SIZE)
         TARGET_UPDATE = 100
-        step_counter = 0   
+        step_counter = 0
         # PSEUDO_EPISODE_LENGTH = 125 # 伪章节长度
-        PSEUDO_EPISODE_LENGTH = 25 # 伪章节长度
+        PSEUDO_EPISODE_LENGTH = 25  # 伪章节长度
         first_last_state = None
         second_last_state = None
         step_counter = 0
@@ -585,7 +550,6 @@ class CLTrainer(Trainer):
         self._globalstep_last_logged = 0
         self._total_flos = self.state.total_flos
         model.zero_grad()
-
 
         self.control = self.callback_handler.on_train_begin(self.args, self.state, self.control)
 
@@ -654,13 +618,13 @@ class CLTrainer(Trainer):
                         teacher_inputs["token_type_ids"] = token_type_ids
 
                     # Encode, unflatten, and pass to student
+
                     if teacher is not None:
                         if "rank" in self.args.first_teacher_name_or_path:
-                            teacher_vecs = teacher( input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids).last_hidden_state
+                            teacher_vecs = teacher(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids).last_hidden_state
                             teacher_vecs = teacher_vecs[input_ids == self.tokenizer.mask_token_id]
                             teacher_vecs = normalize(teacher_vecs, p=2.0, dim=1)
-                            teacher_vecs = teacher_vecs.view(
-                                (batch_size, num_sent, teacher_vecs.size(-1)))  # (bs, num_sent, hidden)
+                            teacher_vecs = teacher_vecs.view((batch_size, num_sent, teacher_vecs.size(-1)))  # (bs, num_sent, hidden)
                             z1, z2 = teacher_vecs[:, 0], teacher_vecs[:, 1]
                         else:
                             embeddings = teacher.encode(teacher_inputs)
@@ -679,11 +643,10 @@ class CLTrainer(Trainer):
 
                     else:
                         if "rank" in self.args.first_teacher_name_or_path:
-                            first_teacher_vecs = first_teacher( input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids).last_hidden_state
+                            first_teacher_vecs = first_teacher(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids).last_hidden_state
                             first_teacher_vecs = first_teacher_vecs[input_ids == self.tokenizer.mask_token_id]
                             first_teacher_vecs = normalize(first_teacher_vecs, p=2.0, dim=1)
-                            first_teacher_vecs = first_teacher_vecs.view(
-                                (batch_size, num_sent, first_teacher_vecs.size(-1)))  # (bs, num_sent, hidden)
+                            first_teacher_vecs = first_teacher_vecs.view((batch_size, num_sent, first_teacher_vecs.size(-1)))  # (bs, num_sent, hidden)
                             first_teacher_z1, first_teacher_z2 = first_teacher_vecs[:, 0], first_teacher_vecs[:, 1]
                         else:
                             embeddings1 = first_teacher.encode(teacher_inputs)
@@ -746,9 +709,9 @@ class CLTrainer(Trainer):
                 self._total_flos += self.floating_point_ops(inputs)
 
                 if (step + 1) % self.args.gradient_accumulation_steps == 0 or (
-                        # last step in epoch but step is always smaller than gradient_accumulation_steps
-                        steps_in_epoch <= self.args.gradient_accumulation_steps
-                        and (step + 1) == steps_in_epoch
+                    # last step in epoch but step is always smaller than gradient_accumulation_steps
+                    steps_in_epoch <= self.args.gradient_accumulation_steps
+                    and (step + 1) == steps_in_epoch
                 ):
                     # Gradient clipping
                     if self.args.max_grad_norm is not None and self.args.max_grad_norm > 0 and not self.deepspeed:
@@ -796,7 +759,7 @@ class CLTrainer(Trainer):
                         # 7812
                         if step < 7812:
                             action, weights = policy_model1.take_action(value1_state)
-                            next_q_value_1 = Critic_model1(*value1_state,action)
+                            next_q_value_1 = Critic_model1(*value1_state, action)
                         else:
                             next_q_value_1 = next_q_value_1
 
@@ -817,9 +780,8 @@ class CLTrainer(Trainer):
                     if first_last_state is not None:
                         first_next_state = model.first_states
                         first_next_state = first_next_state  # len(first_next_state) 3
-                        first_memory.push(first_last_state,first_next_state, first_action, first_weights, first_rewards, next_q_value_1)
+                        first_memory.push(first_last_state, first_next_state, first_action, first_weights, first_rewards, next_q_value_1)
                     first_last_state = model.first_states
-
 
                     second_action = model.second_actions
                     second_rewards = model.second_rewards
@@ -828,21 +790,23 @@ class CLTrainer(Trainer):
                         second_next_state = model.second_states
                         second_next_state = [s.float().to(self.args.device) for s in second_next_state]
                         second_next_state = second_next_state
-                        second_memory.push(second_last_state,second_next_state, second_action, second_weights, second_rewards,value2)
+                        second_memory.push(second_last_state, second_next_state, second_action, second_weights, second_rewards, value2)
                     second_last_state = model.second_states
                     step_counter += 1
                     first_total_reward += first_rewards
                     second_total_reward += second_rewards
                     if step_counter >= PSEUDO_EPISODE_LENGTH:
                         # 计算学习率
-                        decayed_learning_rate = learning_rate * (decay_rate ** global_step)
-                        logger.info(f"  first_action: {first_action} second_action: {second_action} first_total_reward{first_total_reward} second_total_reward{second_total_reward} first_weights:{first_weights}second_weights:{second_weights} ")
+                        decayed_learning_rate = learning_rate * (decay_rate**global_step)
+                        logger.info(
+                            f"  first_action: {first_action} second_action: {second_action} first_total_reward{first_total_reward} second_total_reward{second_total_reward} first_weights:{first_weights}second_weights:{second_weights} "
+                        )
                         # agent4的优化函数 ，这里更新价值网络和策略网络的参数
-                        #optimize_model(first_memory, policy_model1,Critic_model1, self.args.device, lr=decayed_learning_rate)
-                        optimize_model(first_memory, policy_model1, policy_model1_target ,Critic_model1, Critic_model1_target, self.args.device)
+                        # optimize_model(first_memory, policy_model1,Critic_model1, self.args.device, lr=decayed_learning_rate)
+                        optimize_model(first_memory, policy_model1, policy_model1_target, Critic_model1, Critic_model1_target, self.args.device)
                         first_memory.clear()
 
-                        #optimize_model(second_memory, policy_model2,Critic_model2, self.args.device, lr=decayed_learning_rate)
+                        # optimize_model(second_memory, policy_model2,Critic_model2, self.args.device, lr=decayed_learning_rate)
                         optimize_model(second_memory, policy_model2, policy_model2_target, Critic_model2, Critic_model2_target, self.args.device)
                         second_memory.clear()
                         step_counter = 0
@@ -850,13 +814,12 @@ class CLTrainer(Trainer):
                         second_total_reward = 0
                         # RL 7800
                     if step == 7800 and RL_train:
-                        torch.save(policy_model1.state_dict(), 'policy_model_ddpg_1.pth')
-                        torch.save(policy_model2.state_dict(), 'policy_model_ddpg_2.pth')
-                        torch.save(Critic_model1.state_dict(), 'Critic_model_ddpg_1.pth')
-                        torch.save(Critic_model2.state_dict(), 'Critic_model_ddpg_2.pth')
+                        torch.save(policy_model1.state_dict(), "policy_model_ddpg_1.pth")
+                        torch.save(policy_model2.state_dict(), "policy_model_ddpg_2.pth")
+                        torch.save(Critic_model1.state_dict(), "Critic_model_ddpg_1.pth")
+                        torch.save(Critic_model2.state_dict(), "Critic_model_ddpg_2.pth")
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     break
-
 
             self.control = self.callback_handler.on_epoch_end(self.args, self.state, self.control)
             self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval=[])
@@ -867,10 +830,7 @@ class CLTrainer(Trainer):
                     # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
                     xm.master_print(met.metrics_report())
                 else:
-                    logger.warning(
-                        "You enabled PyTorch/XLA debug metrics but you don't have a TPU "
-                        "configured. Check your training configuration if this is unexpected."
-                    )
+                    logger.warning("You enabled PyTorch/XLA debug metrics but you don't have a TPU " "configured. Check your training configuration if this is unexpected.")
             if self.control.should_training_stop:
                 break
 
@@ -880,9 +840,7 @@ class CLTrainer(Trainer):
 
         logger.info("\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
         if self.args.load_best_model_at_end and self.state.best_model_checkpoint is not None:
-            logger.info(
-                f"Loading best model from {self.state.best_model_checkpoint} (score: {self.state.best_metric})."
-            )
+            logger.info(f"Loading best model from {self.state.best_model_checkpoint} (score: {self.state.best_metric}).")
             if isinstance(self.model, PreTrainedModel):
                 self.model = self.model.from_pretrained(self.state.best_model_checkpoint, model_args=self.model_args)
                 if not self.is_model_parallel:
@@ -892,9 +850,7 @@ class CLTrainer(Trainer):
                 self.model.load_state_dict(state_dict)
 
             if self.deepspeed:
-                self.deepspeed.load_checkpoint(
-                    self.state.best_model_checkpoint, load_optimizer_states=False, load_lr_scheduler_states=False
-                )
+                self.deepspeed.load_checkpoint(self.state.best_model_checkpoint, load_optimizer_states=False, load_lr_scheduler_states=False)
 
         metrics = speed_metrics("train", start_time, self.state.max_steps)
         if self._total_flos is not None:
@@ -962,13 +918,13 @@ class CLTrainer(Trainer):
         first_teacher_top1_sim = inputs["first_teacher_top1_sim_pred"]
         second_teacher_top1_sim = inputs["second_teacher_top1_sim_pred"]
 
-        pooler_output, _ = model(**inputs) # last_hidden_state torch.Size([384, 768]) pooler_output torch.Size([128, 3, 768])
+        pooler_output, _ = model(**inputs)  # last_hidden_state torch.Size([384, 768]) pooler_output torch.Size([128, 3, 768])
 
         # Calculate InfoNCE loss
         temp = self.model_args.temp
         cos = nn.CosineSimilarity(dim=-1)
 
-        z1, z2 = pooler_output[:, 0], pooler_output[:, 1] # z1 torch.Size([128, 768]) 
+        z1, z2 = pooler_output[:, 0], pooler_output[:, 1]  # z1 torch.Size([128, 768])
         cos_sim = cos(z1.unsqueeze(1), z2.unsqueeze(0)) / temp
         loss_fct = nn.CrossEntropyLoss()
         labels = torch.arange(cos_sim.size(0)).long().to(cos_sim.device)
@@ -988,7 +944,7 @@ class CLTrainer(Trainer):
             temp3 = temp2 - temp1  # similarity difference
             loss1 = torch.relu(temp3 + alpha) + torch.relu(-temp3 - beta)  # BML loss
             loss1 = torch.mean(loss1)
-            loss_o += loss1 * lambda_  
+            loss_o += loss1 * lambda_
 
         def _get_ranks(x: torch.Tensor) -> torch.Tensor:
             x_rank = x.argsort(dim=1)
@@ -1013,18 +969,16 @@ class CLTrainer(Trainer):
 
             return torch.mm(xn, torch.transpose(yn, 0, 1))
 
-        cos_sim_baseE = cal_spr_corr( distances1, distances2 )
+        cos_sim_baseE = cal_spr_corr(distances1, distances2)
         if self.model_args.second_corpus_vecs is not None:
             distances3 = inputs["distances3"]
             distances4 = inputs["distances4"]
-            cos_second_sim_baseE = cal_spr_corr( distances3, distances4 )
-            cos_sim_baseE = (self.args.alpha_ * cos_sim_baseE) + ( (1.0 - self.args.alpha_) * cos_second_sim_baseE)
+            cos_second_sim_baseE = cal_spr_corr(distances3, distances4)
+            cos_sim_baseE = (self.args.alpha_ * cos_sim_baseE) + ((1.0 - self.args.alpha_) * cos_second_sim_baseE)
 
         cos_sim_baseE = cos_sim_baseE.to(cos_sim.device)
         loss_fct_baseE = nn.MSELoss(reduction="none")
-        cos_sim_baseE_bound = torch.logical_and( 
-            cos_sim_baseE <= self.model_args.baseE_sim_thresh_upp, 
-            cos_sim_baseE >= self.model_args.baseE_sim_thresh_low).type(torch.float).to(cos_sim.device)
+        cos_sim_baseE_bound = torch.logical_and(cos_sim_baseE <= self.model_args.baseE_sim_thresh_upp, cos_sim_baseE >= self.model_args.baseE_sim_thresh_low).type(torch.float).to(cos_sim.device)
         mse = loss_fct_baseE(cos_sim * self.model_args.temp, cos_sim_baseE)
         loss_baseE = torch.sum(mse * cos_sim_baseE_bound) / (torch.sum(cos_sim_baseE_bound) + 1e-8)
 
@@ -1050,7 +1004,7 @@ class CLTrainer(Trainer):
 
             def __init__(self, beta_):
                 super(Divergence, self).__init__()
-                self.kl = nn.KLDivLoss(reduction='batchmean', log_target=True)
+                self.kl = nn.KLDivLoss(reduction="batchmean", log_target=True)
                 self.eps = 1e-7
                 self.beta_ = beta_
 
@@ -1071,8 +1025,8 @@ class CLTrainer(Trainer):
                 self.gamma_ = gamma_
 
             def forward(self, teacher_top1_sim_pred, student_top1_sim_pred):
-                p = F.log_softmax(student_top1_sim_pred.fill_diagonal_(float('-inf')), dim=-1)
-                q = F.softmax(teacher_top1_sim_pred.fill_diagonal_(float('-inf')), dim=-1)
+                p = F.log_softmax(student_top1_sim_pred.fill_diagonal_(float("-inf")), dim=-1)
+                q = F.softmax(teacher_top1_sim_pred.fill_diagonal_(float("-inf")), dim=-1)
                 loss = -(q * p).nansum() / q.nansum()
                 return self.gamma_ * loss
 
@@ -1099,7 +1053,7 @@ class CLTrainer(Trainer):
                 y_true_sorted, indices = y_true_shuffled.sort(descending=True, dim=-1)
                 mask = y_true_sorted == -1
                 preds_sorted_by_true = torch.gather(y_pred_shuffled, dim=1, index=indices)
-                preds_sorted_by_true[mask] = float('-inf')
+                preds_sorted_by_true[mask] = float("-inf")
                 max_pred_values, _ = preds_sorted_by_true.max(dim=1, keepdim=True)
                 preds_sorted_by_true_minus_max = preds_sorted_by_true - max_pred_values
                 cumsums = torch.cumsum(preds_sorted_by_true_minus_max.exp().flip(dims=[1]), dim=1).flip(dims=[1])
@@ -1136,7 +1090,7 @@ class CLTrainer(Trainer):
             state.append(x3)
             return state
 
-        # 以下代码都是在compute_loss计算损失函数的函数里面 
+        # 以下代码都是在compute_loss计算损失函数的函数里面
         steps_done = inputs["steps_done"]
         div = Divergence(beta_=self.model_args.beta_)
         if self.model_args.distillation_loss == "listnet":
@@ -1155,7 +1109,7 @@ class CLTrainer(Trainer):
             # get_environment_state 返回的就是 next_state
             first_teacher_state = get_environment_state(sim_tensor1, inputs, z1, z2, cos_sim, encoder, distillation_loss_fct)
             second_teacher_state = get_environment_state(sim_tensor2, inputs, z1, z2, cos_sim, encoder, distillation_loss_fct)
-            
+
             first_teacher_policy = inputs["policy_model1"]
             second_teacher_policy = inputs["policy_model2"]
 
@@ -1171,7 +1125,7 @@ class CLTrainer(Trainer):
                 second_action = model.second_actions
                 first_avg_probability = model.first_weights
                 second_avg_probability = model.second_weights
-                
+
             # teacher_top1_sim_pred = (action * first_teacher_top1_sim) + (
             #         (1.0 - action) * second_teacher_top1_sim)
         if first_action == 0 and second_action == 0:
@@ -1189,7 +1143,7 @@ class CLTrainer(Trainer):
             kd_loss = distillation_loss_fct(teacher_top1_sim_pred.to(encoder.device), student_top1_sim_pred)
 
         model.first_actions = first_action
-        
+
         model.first_weights = first_avg_probability
         model.second_actions = second_action
         model.second_weights = second_avg_probability

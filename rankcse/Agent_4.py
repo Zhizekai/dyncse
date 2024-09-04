@@ -28,24 +28,14 @@ class PolicyNet(nn.Module):
         self.num_teacher = num_teacher  # 假设有两个老师模型
 
         # 定义权重和偏置
-        self.W1 = nn.Parameter(
-            torch.FloatTensor(embedding_length, 128).uniform_(-0.5, 0.5)
-        )  # 768,128
+        self.W1 = nn.Parameter(torch.FloatTensor(embedding_length, 128).uniform_(-0.5, 0.5))  # 768,128
         # self.W2 = nn.Parameter(torch.FloatTensor(128, 128).uniform_(-0.5, 0.5)) #128,128
-        self.W2 = nn.Parameter(
-            torch.FloatTensor(batch_size, 128).uniform_(-0.5, 0.5)
-        )  # 128,128
-        self.W3 = nn.Parameter(
-            torch.FloatTensor(num_teacher, 128).uniform_(-0.5, 0.5)
-        )  # 2,128
+        self.W2 = nn.Parameter(torch.FloatTensor(batch_size, 128).uniform_(-0.5, 0.5))  # 128,128
+        self.W3 = nn.Parameter(torch.FloatTensor(num_teacher, 128).uniform_(-0.5, 0.5))  # 2,128
         self.b = nn.Parameter(torch.FloatTensor(1, 128).uniform_(-0.5, 0.5))
 
-        self.fc_alpha = nn.Parameter(
-            torch.FloatTensor(128, 1).uniform_(-0.5, 0.5)
-        )  # 输出 alpha
-        self.fc_beta = nn.Parameter(
-            torch.FloatTensor(128, 1).uniform_(-0.5, 0.5)
-        )  # 输出 beta
+        self.fc_alpha = nn.Parameter(torch.FloatTensor(128, 1).uniform_(-0.5, 0.5))  # 输出 alpha
+        self.fc_beta = nn.Parameter(torch.FloatTensor(128, 1).uniform_(-0.5, 0.5))  # 输出 beta
 
         self.epsilon = 1.0  # 初始epsilon值
         self.epsilon_min = 0.01  # epsilon的最小值
@@ -59,9 +49,7 @@ class PolicyNet(nn.Module):
 
         # 将输入与相应的权重相乘
         x1_ = torch.matmul(x1, self.W1)  # 2,128,128
-        x2_ = torch.matmul(
-            x2, self.W2
-        )  # 2,128,128  这个出问题了 x2 最后一个维度成64 了，原来是（2,256,256）现在是（2， 256， 64）
+        x2_ = torch.matmul(x2, self.W2)  # 2,128,128  这个出问题了 x2 最后一个维度成64 了，原来是（2,256,256）现在是（2， 256， 64）
 
         # 将第三个输入乘以其权重
         x3_ = torch.matmul(x3, self.W3)  # 1,128
@@ -87,15 +75,11 @@ class PolicyNet(nn.Module):
         # state当中有三个变量 embeddings_tensor,soft_lable,concatenated_loss，都是get_environment_state 函数生成的
 
         # 直接调用网络来生成一个概率  state tensor([[510.9451, 519.7139]]
-        weights = self.forward(
-            *state
-        )  # 这个是策略网络的前向传播输出，weights当中 是[alpha, beta]，*state 是解包成单独的参数传进去
+        weights = self.forward(*state)  # 这个是策略网络的前向传播输出，weights当中 是[alpha, beta]，*state 是解包成单独的参数传进去
 
         # 计算概率分布
         # dist = torch.distributions.Normal(weights[0].float(), weights[1].float())
-        dist = torch.distributions.beta.Beta(
-            weights[0].float(), weights[1].float()
-        )  # weights[0]是alpha，weights[1]是beta
+        dist = torch.distributions.beta.Beta(weights[0].float(), weights[1].float())  # weights[0]是alpha，weights[1]是beta
         action = dist.sample().to(self.device)
 
         # 更新epsilon值，但不让它低于最小值
@@ -106,17 +90,13 @@ class PolicyNet(nn.Module):
 
     def test_policy(self, state):
         avg_probability = self.forward(*state).to(self.device)  # 获取动作概率
-        action = (
-            torch.distributions.Bernoulli(avg_probability).sample().to(self.device)
-        )  # 选择概率最高的动作
+        action = torch.distributions.Bernoulli(avg_probability).sample().to(self.device)  # 选择概率最高的动作
         return action, avg_probability
 
 
 # 假设你有一个表示概率的张量
 probs = torch.tensor([0.5], requires_grad=True)
-Transition = namedtuple(
-    "Transion", ("state", "next_state", "action", "weights", "reward", "value")
-)
+Transition = namedtuple("Transion", ("state", "next_state", "action", "weights", "reward", "value"))
 
 
 # 经验回放技术，DQN里面用到的
@@ -164,9 +144,7 @@ def compute_advantage(gamma, lmbda, td_delta, device):
     return torch.tensor(advantage_list, dtype=torch.float, device=device)
 
 
-def optimize_model(
-    memory, policy_net, policy_net_target, critic, critic_target, device, lr=1e-4
-):
+def optimize_model(memory, policy_net, policy_net_target, critic, critic_target, device, lr=1e-4):
     """
     这个有可能相当于update 函数
     """
@@ -189,18 +167,12 @@ def optimize_model(
     for _ in range(NUM_PPO_UPDATES):
 
         # 准备数据，这里的acion 是从经验池里拿回来的
-        action_batch = torch.cat(
-            list(map(lambda a: torch.tensor([a], device=device), batch.action))
-        )
+        action_batch = torch.cat(list(map(lambda a: torch.tensor([a], device=device), batch.action)))
         # print("action 动作概率：",action_batch)
-        reward_batch = torch.cat(
-            list(map(lambda r: torch.tensor([r], device=device), batch.reward))
-        )
+        reward_batch = torch.cat(list(map(lambda r: torch.tensor([r], device=device), batch.reward)))
         episode_size = reward_batch.shape[0]  # 伪章节长度
 
-        old_weights = torch.cat(
-            list(map(lambda r: torch.tensor(r, device=device), batch.weights))
-        )
+        old_weights = torch.cat(list(map(lambda r: torch.tensor(r, device=device), batch.weights)))
         old_weights = old_weights.view(-1, 2)
         value = torch.cat([torch.tensor([v], device=device) for v in batch.value])
         # >>>>>>>>>>>
@@ -214,9 +186,7 @@ def optimize_model(
         next_q_values = []
         for next_state in batch.next_state:
             if isinstance(next_state, torch.Tensor):
-                next_state = next_state.half().to(
-                    device
-                )  # 转换为半精度并移至正确的设备
+                next_state = next_state.half().to(device)  # 转换为半精度并移至正确的设备
             elif isinstance(next_state, list):
                 next_state = [s.float().to(device) for s in next_state]
             next_q_value, _ = policy_net_target.take_action(next_state)
@@ -228,9 +198,7 @@ def optimize_model(
         next_q_values_2 = []
         for next_state in batch.next_state:
             if isinstance(next_state, torch.Tensor):
-                next_state = next_state.half().to(
-                    device
-                )  # 转换为半精度并移至正确的设备
+                next_state = next_state.half().to(device)  # 转换为半精度并移至正确的设备
             elif isinstance(next_state, list):
                 next_state = [s.float().to(device) for s in next_state]
             next_q_value_sum = 0
@@ -386,15 +354,9 @@ class Critic(nn.Module):
         super(Critic, self).__init__()
 
         # 定义权重和偏置
-        self.W1 = nn.Parameter(
-            torch.FloatTensor(embedding_length, 128).uniform_(-0.5, 0.5)
-        )  # 768,128
-        self.W2 = nn.Parameter(
-            torch.FloatTensor(batch_size, 128).uniform_(-0.5, 0.5)
-        )  # 128,128
-        self.W3 = nn.Parameter(
-            torch.FloatTensor(num_teacher, 128).uniform_(-0.5, 0.5)
-        )  # 2,128
+        self.W1 = nn.Parameter(torch.FloatTensor(embedding_length, 128).uniform_(-0.5, 0.5))  # 768,128
+        self.W2 = nn.Parameter(torch.FloatTensor(batch_size, 128).uniform_(-0.5, 0.5))  # 128,128
+        self.W3 = nn.Parameter(torch.FloatTensor(num_teacher, 128).uniform_(-0.5, 0.5))  # 2,128
         self.W4 = nn.Parameter(torch.FloatTensor(1, 128).uniform_(-0.5, 0.5))
         self.b = nn.Parameter(torch.FloatTensor(1, 128).uniform_(-0.5, 0.5))  # 1,128
 

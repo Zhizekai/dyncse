@@ -13,7 +13,7 @@ python train_1.py \
     --simf Spearmanr \
     --loss_type weighted_sum \
     --corpus_vecs $PROJECT_DIR/rankcse/index_vecs_rank1/corpus_0.01_sncse.npy \
-    --model_name_or_path $MODEL_DIR/sts_model/bert-base-uncased/ \
+    --model_name_or_path /mnt/nfs-storage-pvc-n28/user_codes/rizeJin/wzl/model-files/bert-large-uncased/ \
     --train_file $MODEL_DIR/sts_model/corpus/wiki1m_for_simcse.txt \
     --output_dir runs/checkpoint-09-04 \
     --num_train_epochs 4 \

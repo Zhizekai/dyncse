@@ -5,4 +5,4 @@ SEED=61507
 python evaluation_rank.py \
     --model_name_or_path $PROJECT_DIR/runs/checkpoint-08-31_score_81.05 \
     --task_set sts \
-    --mode test
+    --mode test > eval_result.txt
