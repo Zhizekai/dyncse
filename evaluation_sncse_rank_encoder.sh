@@ -1,8 +1,9 @@
-PROJECT_DIR=/mnt/nfs-storage-pvc-n28/user_codes/rizeJin/zzk/exp/RankCSE-master
+CHECKPOINT_DIR=checkpoint-09-22
 #  /mnt/workspace/rankcse_wxt/RankCSE-master/runs/checkpoint-5-20
 # /mnt/nfs-storage-pvc-n28/user_codes/rizeJin/wxt/wyy/RankCSE-master/runs/result5/
 SEED=61507
+:> ./runs/$CHECKPOINT_DIR/evaluation_result.txt  # 清空文件
 python evaluation_rank.py \
-    --model_name_or_path $PROJECT_DIR/runs/checkpoint-08-31_score_81.05 \
+    --model_name_or_path ./runs/$CHECKPOINT_DIR \
     --task_set sts \
-    --mode test > eval_result.txt
+    --mode test >> ./runs/$CHECKPOINT_DIR/evaluation_result.txt

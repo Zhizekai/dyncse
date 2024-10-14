@@ -1,11 +1,15 @@
 #!/bin/bash
-# PROJECT_DIR=/mnt/nfs-storage-pvc-n28/user_codes/rizeJin/wxt/RankCSE-master
-# --soft_negative_file $PROJECT_DIR/outputs/corpus/soft_negative_samples.txt
+# roberta-base  bert-base-uncased
+# 第一个教师模型：DefSentPlus-simcse-roberta-base，unsup-simcse-roberta-large
+# rank-encoder-sncse-bert-base-uncased，unsup-simcse-bert-large-uncased
+# --first_teacher_name_or_path $MODEL_DIR/sts_model/rank-encoder-sncse-bert-base-uncased/
+# --second_teacher_name_or_path $MODEL_DIR/sts_model/unsup-simcse-bert-large-uncased/ \
+
 PROJECT_DIR=/mnt/nfs-storage-pvc-n28/user_codes/rizeJin/zzk/exp/RankCSE-master
 MODEL_DIR=/mnt/nfs-storage-pvc-n28/user_codes/rizeJin/zzk/exp/
+CHECKPOINT_DIR=checkpoint-09-22
 SEED=61507
-CUDA_VISIBLE_DEVICES=0 \
-python train_1.py \
+CUDA_VISIBLE_DEVICES=0 python train_1.py \
     --baseE_sim_thresh_upp 0.9999 \
     --baseE_sim_thresh_low 0.5 \
     --baseE_lmb 0.05 \
@@ -13,9 +17,10 @@ python train_1.py \
     --simf Spearmanr \
     --loss_type weighted_sum \
     --corpus_vecs $PROJECT_DIR/rankcse/index_vecs_rank1/corpus_0.01_sncse.npy \
-    --model_name_or_path /mnt/nfs-storage-pvc-n28/user_codes/rizeJin/wzl/model-files/bert-large-uncased/ \
+    --second_corpus_vecs $PROJECT_DIR/rankcse/simcse_large_index_vecs/corpus_0.01_sncse.npy \
+    --model_name_or_path /mnt/nfs-storage-pvc-n28/user_codes/rizeJin/wzl/model-files/bert-base-uncased/ \
     --train_file $MODEL_DIR/sts_model/corpus/wiki1m_for_simcse.txt \
-    --output_dir runs/checkpoint-09-04 \
+    --output_dir runs/$CHECKPOINT_DIR \
     --num_train_epochs 4 \
     --per_device_train_batch_size 128 \
     --learning_rate 3e-5 \
@@ -31,8 +36,8 @@ python train_1.py \
     --temp 0.05 \
     --do_train \
     --fp16 \
-    --first_teacher_name_or_path $MODEL_DIR/sts_model/rank-encoder-sncse-bert-base-uncased/ \
-    --second_teacher_name_or_path $MODEL_DIR/sts_model/unsup-simcse-bert-large-uncased/ \
+    --first_teacher_name_or_path $MODEL_DIR/sts_model/sup-simcse-bert-base-uncased/  \
+    --second_teacher_name_or_path $MODEL_DIR/sts_model/sup-simcse-bert-large-uncased/ \
     --distillation_loss listmle \
     --alpha_ 0.50 \
     --beta_ 1.0 \
@@ -40,7 +45,3 @@ python train_1.py \
     --tau2 0.05 \
     --soft_negative_file $MODEL_DIR/sts_model/corpus/soft_negative_samples.txt
 
-python evaluation_rank.py \
-    --model_name_or_path $PROJECT_DIR/runs/checkpoint-09-04 \
-    --task_set sts \
-    --mode test

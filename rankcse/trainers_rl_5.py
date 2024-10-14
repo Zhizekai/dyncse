@@ -100,11 +100,16 @@ logger = logging.get_logger(__name__)
 
 
 class CLTrainer(Trainer):
+    # def __init__(self, model,args,train_dataset,tokenizer,data_collator,bert_data_collator=None, bert_tokenizer=None):
+    #     super().__init__(
+    #         model=model,
+    #         args = args,train_dataset = train_dataset,
+    #         tokenizer = tokenizer,
+    #         data_collator=data_collator)
+    #     self.bert_tokenizer = bert_tokenizer
 
-    def evaluate(
-        self,
-        eval_dataset: Optional[Dataset] = None,
-        ignore_keys: Optional[List[str]] = None,
+
+    def evaluate(self, eval_dataset: Optional[Dataset] = None, ignore_keys: Optional[List[str]] = None,
         metric_key_prefix: str = "eval",
         eval_senteval_transfer: bool = False,
     ) -> Dict[str, float]:
@@ -117,7 +122,10 @@ class CLTrainer(Trainer):
             sentences = [" ".join(s) for s in batch]
 
             sentences = [s + " ." if s.strip()[-1] not in PUNCTUATION else s for s in sentences]
+            # bert
             sentences = ["""This sentence : " """ + s + """ " means [MASK] .""" for s in sentences]
+            # roberta
+            # sentences = ["""This sentence : " """ + s + """ " means <mask> .""" for s in sentences]
 
             batch = self.tokenizer.batch_encode_plus(
                 sentences,
@@ -303,6 +311,8 @@ class CLTrainer(Trainer):
 
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
+        # print(next(iter(train_dataloader)))
+        # input()
 
         # Setting up training control variables:
         # number of training epochs: num_train_epochs
@@ -376,7 +386,7 @@ class CLTrainer(Trainer):
             total_train_batch_size = self.args.train_batch_size * xm.xrt_world_size()
         else:
             total_train_batch_size = self.args.train_batch_size * self.args.gradient_accumulation_steps * (torch.distributed.get_world_size() if self.args.local_rank != -1 else 1)
-
+        # 获取训练数据迭代器对象
         num_examples = self.num_examples(train_dataloader) if train_dataset_is_sized else total_train_batch_size * self.args.max_steps
 
         logger.info("***** Running training *****")
@@ -431,6 +441,8 @@ class CLTrainer(Trainer):
             second_pooler = "cls_before_pooler" if ("simcse" in self.args.second_teacher_name_or_path or "diffcse" in self.args.second_teacher_name_or_path) else "avg"
             second_teacher = Teacher(model_name_or_path=self.args.second_teacher_name_or_path, pooler=second_pooler)
             sentence_vecs = torch.tensor(np.load(self.model_args.corpus_vecs)).to(first_teacher.device)
+            # 单教师情况
+            # sentence_vecs = torch.tensor(np.load(self.model_args.second_corpus_vecs)).to(first_teacher.device)
             # sentence_vecs = sentence_vecs.half()
             sentence_vecs = normalize(sentence_vecs, p=2.0, dim=1)
             if self.model_args.second_corpus_vecs is not None:
@@ -450,16 +462,17 @@ class CLTrainer(Trainer):
             # Critic_model1.load_state_dict(Critic_model2_params)
 
             # Reinforcement Learning DDPG
-            # bert 的 embedding是768 bert large 是 1024
-            policy_model1 = PolicyNet(2, 1024, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)  # num_teacher是2，embedding_length是768
-            policy_model1_target = PolicyNet(2, 1024, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            Critic_model1 = Critic(128, 2, 1024, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            Critic_model1_target = Critic(128, 2, 1024, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            # bert 的 embedding_length是768 bert large 是 1024
+            embedding_length = 768
+            policy_model1 = PolicyNet(2, embedding_length, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)  # num_teacher是2，embedding_length是768
+            policy_model1_target = PolicyNet(2, embedding_length, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            Critic_model1 = Critic(128, 2, embedding_length, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            Critic_model1_target = Critic(128, 2, embedding_length, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
 
-            policy_model2 = PolicyNet(2, 1024, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            policy_model2_target = PolicyNet(2, 1024, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            Critic_model2 = Critic(128, 2, 1024, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
-            Critic_model2_target = Critic(128, 2, 1024, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            policy_model2 = PolicyNet(2, embedding_length, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            policy_model2_target = PolicyNet(2, embedding_length, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            Critic_model2 = Critic(128, 2, embedding_length, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
+            Critic_model2_target = Critic(128, 2, embedding_length, batch_size=self.args.per_device_train_batch_size).to(self.args.device)
 
             # 加载模型初始化参数
 
@@ -562,7 +575,7 @@ class CLTrainer(Trainer):
         # 开始循环训练从epochs_trained 到num_train_epochs
         for epoch in range(epochs_trained, num_train_epochs):
             if isinstance(train_dataloader, DataLoader) and isinstance(train_dataloader.sampler, DistributedSampler):
-                train_dataloader.sampler.set_epoch(epoch)
+                train_dataloader.sampler.set_epoch(epoch)  # 分布式采样器设置epoch
             epoch_iterator = train_dataloader
 
             # Reset the past mems state at the beginning of each epoch if necessary.
@@ -580,6 +593,8 @@ class CLTrainer(Trainer):
             total_reward = 0.0
             global_step += 1
             for step, inputs in enumerate(epoch_iterator):
+                # print(inputs.keys())
+                # input()
                 # 一个epoch 当中
                 # Skip past any already trained steps if resuming training
                 if steps_trained_in_current_epoch > 0:
@@ -592,7 +607,7 @@ class CLTrainer(Trainer):
                 # RankCSE - pass the similarity lists obtained by the teacher in inputs['teacher_top1_sim_pred']
                 with torch.no_grad():
 
-                    # Read batch inputs
+                    # Read batch inputs 强制使用bert 的tokenizer生成的 input_ids
                     input_ids = inputs["input_ids"]
                     attention_mask = inputs["attention_mask"]
 
@@ -620,6 +635,7 @@ class CLTrainer(Trainer):
                     # Encode, unflatten, and pass to student
 
                     if teacher is not None:
+                        # 只有一个教师模型
                         if "rank" in self.args.first_teacher_name_or_path:
                             teacher_vecs = teacher(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids).last_hidden_state
                             teacher_vecs = teacher_vecs[input_ids == self.tokenizer.mask_token_id]
@@ -632,8 +648,8 @@ class CLTrainer(Trainer):
                             z1, z2 = embeddings[:, 0], embeddings[:, 1]
 
                         # if self.args.fp16:
-                        #     z1 = z1.to(torch.float16)
-                        #     z2 = z2.to(torch.float16)
+                        # z1 = z1.to(torch.float16)
+                        # z2 = z2.to(torch.float16)
                         z1T = z1.to(torch.float)
                         z2T = z2.to(torch.float)
                         dist1 = torch.mm(z1T, torch.transpose(sentence_vecs, 0, 1))
@@ -642,7 +658,11 @@ class CLTrainer(Trainer):
                         teacher_top1_sim_pred = cos(z1T.unsqueeze(1), z2T.unsqueeze(0)) / self.args.tau2
 
                     else:
+                        # 有两个教师模型
                         if "rank" in self.args.first_teacher_name_or_path:
+                            token_type_ids = None
+                            # input()
+                            # 数组越界
                             first_teacher_vecs = first_teacher(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids).last_hidden_state
                             first_teacher_vecs = first_teacher_vecs[input_ids == self.tokenizer.mask_token_id]
                             first_teacher_vecs = normalize(first_teacher_vecs, p=2.0, dim=1)
@@ -664,6 +684,9 @@ class CLTrainer(Trainer):
 
                         z1T = first_teacher_z1
                         z2T = first_teacher_z2
+                        # print(second_teacher_z1.shape, torch.transpose(sentence_vecs, 0, 1).shape)
+                        # print(second_teacher_z2.shape, torch.transpose(sentence_vecs, 0, 1).shape)
+                        # input()
                         dist1 = torch.mm(first_teacher_z1, torch.transpose(sentence_vecs, 0, 1))
                         dist2 = torch.mm(first_teacher_z2, torch.transpose(sentence_vecs, 0, 1))
                         if self.model_args.second_corpus_vecs is not None:
@@ -842,7 +865,10 @@ class CLTrainer(Trainer):
         if self.args.load_best_model_at_end and self.state.best_model_checkpoint is not None:
             logger.info(f"Loading best model from {self.state.best_model_checkpoint} (score: {self.state.best_metric}).")
             if isinstance(self.model, PreTrainedModel):
+                # bert
                 self.model = self.model.from_pretrained(self.state.best_model_checkpoint, model_args=self.model_args)
+                # roberta
+                # self.model = self.model.from_pretrained(self.state.best_model_checkpoint, model_args=self.model_args, mask_token_id=tokenizer.mask_token_id)
                 if not self.is_model_parallel:
                     self.model = self.model.to(self.args.device)
             else:
@@ -944,6 +970,7 @@ class CLTrainer(Trainer):
             temp3 = temp2 - temp1  # similarity difference
             loss1 = torch.relu(temp3 + alpha) + torch.relu(-temp3 - beta)  # BML loss
             loss1 = torch.mean(loss1)
+            # loss1 = 0  # 消融实验，取消注释就是不使用BML loss
             loss_o += loss1 * lambda_
 
         def _get_ranks(x: torch.Tensor) -> torch.Tensor:
@@ -1066,12 +1093,12 @@ class CLTrainer(Trainer):
             # 获取环境状态
             state = []
 
-            soft_label = sim_tensor  # 这个就是两个教师模型预测结果的余弦相似度concat 了一下
-
             # z1，z2 是pooler 的输出
-            embeddings_tensor = torch.cat([z1.unsqueeze(0), z1.unsqueeze(0)], dim=0)
-            x1 = embeddings_tensor  # torch.Size([2, 128, 768])，这个256就是batch_size
+            embeddings_tensor = torch.cat([z1.unsqueeze(0), z1.unsqueeze(0)], dim=0) # 这两个就是 pooler_output 的输出，z1 和 z2是学生模型的输出
+            x1 = embeddings_tensor  # torch.Size([2, 128, 768])，这个128就是batch_size 这个就是
+            soft_label = sim_tensor  # 这个是某一个教师模型的预测的结果 first_teacher_top1_sim
             x2 = soft_label  # torch.Size([2, 128, 128])
+            
             state.append(x1)
             state.append(x2)
 
@@ -1080,7 +1107,7 @@ class CLTrainer(Trainer):
             first_teacher_top1_sim_pred = inputs["first_teacher_top1_sim_pred"]
             second_teacher_top1_sim_pred = inputs["second_teacher_top1_sim_pred"]
 
-            # kd_loss 是知识蒸馏损失函数得出的结果
+            # kd_loss
             first_kd_loss = distillation_loss_fct(first_teacher_top1_sim_pred.to(encoder.device), student_top1_sim_pred)
             second_kd_loss = distillation_loss_fct(second_teacher_top1_sim_pred.to(encoder.device), student_top1_sim_pred)
 
@@ -1107,10 +1134,9 @@ class CLTrainer(Trainer):
             sim_tensor2 = inputs["sim_tensor2"]
             # get_environment_state 返回的是[embeddings_tensor,soft_label,concatenated_loss]
             # get_environment_state 返回的就是 next_state
-            first_teacher_state = get_environment_state(sim_tensor1, inputs, z1, z2, cos_sim, encoder, distillation_loss_fct)
+            first_teacher_state  = get_environment_state(sim_tensor1, inputs, z1, z2, cos_sim, encoder, distillation_loss_fct)
             second_teacher_state = get_environment_state(sim_tensor2, inputs, z1, z2, cos_sim, encoder, distillation_loss_fct)
-
-            first_teacher_policy = inputs["policy_model1"]
+            first_teacher_policy  = inputs["policy_model1"]
             second_teacher_policy = inputs["policy_model2"]
 
             # 7812  这里很有可能是因为这里他不够了,最后一个step 不能用了，所以直接把后面的数据跳过了
@@ -1118,12 +1144,12 @@ class CLTrainer(Trainer):
                 # avg_probability 是take_action 返回的weights，也就是[alpha,beta]
                 first_action, first_avg_probability = first_teacher_policy.take_action(first_teacher_state)
                 second_action, second_avg_probability = second_teacher_policy.take_action(second_teacher_state)
-                model.first_states = first_teacher_state
+                model.first_states  = first_teacher_state
                 model.second_states = second_teacher_state
             else:
-                first_action = model.first_actions
+                first_action  = model.first_actions
                 second_action = model.second_actions
-                first_avg_probability = model.first_weights
+                first_avg_probability  = model.first_weights
                 second_avg_probability = model.second_weights
 
             # teacher_top1_sim_pred = (action * first_teacher_top1_sim) + (
@@ -1131,17 +1157,22 @@ class CLTrainer(Trainer):
         if first_action == 0 and second_action == 0:
             kd_loss = 0
         else:
-            # total_probability = first_avg_probability + second_avg_probability
+            total_probability = first_avg_probability + second_avg_probability
             # weight1 = first_avg_probability / total_probability
             # weight2 = second_avg_probability / total_probability
+
+            # weight1 = 0.5
+            # weight2 = 0.5
+
+            # RL 的损失函数，计算的是两个动作的权重和与1的差值，消融实验中要把这个注释掉
             total_probability = first_action + second_action
             weight1 = first_action / total_probability
             weight2 = second_action / total_probability
 
-            teacher_top1_sim_pred = (weight1 * first_teacher_top1_sim) + (weight2 * second_teacher_top1_sim)
+            teacher_top1_sim_pred = (weight1 * first_teacher_top1_sim) + (weight2 * second_teacher_top1_sim) # 最后通过权重计算得到教师模型的top1相似度
             student_top1_sim_pred = cos_sim.clone()
-            kd_loss = distillation_loss_fct(teacher_top1_sim_pred.to(encoder.device), student_top1_sim_pred)
-
+            kd_loss = distillation_loss_fct(teacher_top1_sim_pred.to(encoder.device), student_top1_sim_pred)  # 蒸馏学习的损失函数
+            # kd_loss = 0 # 消融实验，解注释就是去掉蒸馏学习的损失函数
         model.first_actions = first_action
 
         model.first_weights = first_avg_probability

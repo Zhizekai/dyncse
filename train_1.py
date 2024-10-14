@@ -420,6 +420,9 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
     elif model_args.model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
+        # bert 的 toeknizer bert_tokenizer_name
+        bert_tokenizer_name = "/mnt/nfs-storage-pvc-n28/user_codes/rizeJin/wzl/model-files/bert-base-uncased/"
+        bert_tokenizer = AutoTokenizer.from_pretrained(bert_tokenizer_name, **tokenizer_kwargs)
     else:
         raise ValueError(
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
@@ -428,6 +431,12 @@ def main():
 
     mask_dict = {"mask_token": tokenizer.mask_token}
     tokenizer.add_special_tokens(mask_dict)
+
+    # bert tokenizer 问题
+    if 'roberta' in model_args.model_name_or_path:
+        mask_dict = {"mask_token": bert_tokenizer.mask_token}
+        bert_tokenizer.add_special_tokens(mask_dict)
+
 
     if model_args.model_name_or_path:
         # Set hyperparameters of BML loss
@@ -562,9 +571,23 @@ def main():
             s1 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(s1))
             ss1 = '''This sentence of " '''
             ss1 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(ss1))
+
+
             if 'roberta' in model_args.model_name_or_path:
+                # roberta tokenizer
                 s2 = ''' " means <mask> .'''
                 s2 = tokenizer.encode(s2)[1:-1]
+
+                # bert tokenizer
+                # bert_s1 = '''This sentence : " '''
+                # bert_s1 = bert_tokenizer.convert_tokens_to_ids(bert_tokenizer.tokenize(bert_s1))
+                # bert_ss1 = '''This sentence of " '''
+                # bert_ss1 = bert_tokenizer.convert_tokens_to_ids(bert_tokenizer.tokenize(bert_ss1))
+
+                # bert_s2 = ''' " means [MASK] .'''
+                # bert_s2 = bert_tokenizer.convert_tokens_to_ids(bert_tokenizer.tokenize(bert_s2))
+
+
             elif 'bert' in model_args.model_name_or_path:
                 s2 = ''' " means [MASK] .'''
                 s2 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(s2))
@@ -574,14 +597,17 @@ def main():
 
             max_seq_length = data_args.max_seq_length - len(s1) - len(s2) - 2
             max_seq_length1 = data_args.max_seq_length - len(ss1) - len(s2) - 2
+
+            # if 'roberta' in model_args.model_name_or_path:
+            #     bert_max_seq_length = data_args.max_seq_length - len(bert_s1) - len(bert_s2) - 2
+            #     bert_max_seq_length1 = data_args.max_seq_length - len(bert_ss1) - len(bert_s2) - 2
+
             sent_features = defaultdict(list)
 
             for idx in range(total):
 
                 sentence = examples[sent0_cname][idx]
-
                 negation_sentence = negation.get(sentence, "Not " + sentence)
-
 
                 tokens0 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(sentence))
                 if len(tokens0) > max_seq_length:
@@ -601,9 +627,34 @@ def main():
                 tokens2 = [tokenizer.cls_token_id] + ss1 + tokens2 + s2 + [tokenizer.sep_token_id]
                 assert tokens2.count(tokenizer.mask_token_id) == 1
 
+                # if 'roberta' in model_args.model_name_or_path:
+                #     # bert tokenizer
+                #     bert_tokens0 = bert_tokenizer.convert_tokens_to_ids(bert_tokenizer.tokenize(sentence))
+                #     if len(bert_tokens0) > bert_max_seq_length:
+                #         bert_tokens0 = bert_tokens0[: bert_max_seq_length]
+                #     bert_tokens0 = [bert_tokenizer.cls_token_id] + bert_s1 + bert_tokens0 + bert_s2 + [bert_tokenizer.sep_token_id]
+                #     # print(bert_tokenizer.mask_token_id)
+                #     # input()
+                #     assert bert_tokens0.count(bert_tokenizer.mask_token_id) == 1
+
+                #     bert_tokens1 = bert_tokenizer.convert_tokens_to_ids(bert_tokenizer.tokenize(sentence))
+                #     if len(bert_tokens1) > bert_max_seq_length1:
+                #         bert_tokens1 = bert_tokens1[: bert_max_seq_length1]
+                #     bert_tokens1 = [bert_tokenizer.cls_token_id] + bert_ss1 + bert_tokens1 + bert_s2 + [bert_tokenizer.sep_token_id]
+                #     assert bert_tokens1.count(bert_tokenizer.mask_token_id) == 1
+
+                #     bert_tokens2 = bert_tokenizer.convert_tokens_to_ids(bert_tokenizer.tokenize(negation_sentence))
+                #     if len(bert_tokens2) > bert_max_seq_length1:
+                #         bert_tokens2 = bert_tokens2[: bert_max_seq_length1]
+                #     bert_tokens2 = [bert_tokenizer.cls_token_id] + bert_ss1 + bert_tokens2 + bert_s2 + [bert_tokenizer.sep_token_id]
+                #     assert bert_tokens2.count(bert_tokenizer.mask_token_id) == 1
+
+
                 sent_features["input_ids"].append([tokens0, tokens1, tokens2])
                 sent_features['attention_mask'].append([[1] * len(tokens0), [1] * len(tokens1), [1] * len(tokens2)])
                 if 'roberta' in model_args.model_name_or_path:
+                    # sent_features["bert_input_ids"].append([bert_tokens0, bert_tokens1, bert_tokens2])
+                    # sent_features['bert_attention_mask'].append([[1] * len(bert_tokens0), [1] * len(bert_tokens1), [1] * len(bert_tokens2)])
                     sent_features['token_type_ids'].append([[0] * len(tokens0), [0] * len(tokens1), [0] * len(tokens2)])
 
             return sent_features
@@ -611,6 +662,7 @@ def main():
             raise NotImplementedError
 
     if training_args.do_train:
+        # map 数据集到特征
         train_dataset = datasets["train"].map(
             prepare_features,
             batched=True,
@@ -649,11 +701,11 @@ def main():
                 pad_to_multiple_of=self.pad_to_multiple_of,
                 return_tensors="pt",
             )
+            # bert_batch
             if model_args.do_mlm:
                 batch["mlm_input_ids"], batch["mlm_labels"] = self.mask_tokens(batch["input_ids"])
 
             batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
-
             if "label" in batch:
                 batch["labels"] = batch["label"]
                 del batch["label"]
@@ -698,13 +750,17 @@ def main():
             return inputs, labels
 
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(tokenizer)
+    if 'roberta' in model_args.model_name_or_path:
+        data_collator.bert_tokenizer = bert_tokenizer
+        bert_data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(bert_tokenizer)
+
 
     training_args.first_teacher_name_or_path = model_args.first_teacher_name_or_path
     training_args.second_teacher_name_or_path = model_args.second_teacher_name_or_path
     training_args.tau2 = model_args.tau2
     training_args.alpha_ = model_args.alpha_
 
-
+    
     trainer = CLTrainer(
         model=model,
         args=training_args,
@@ -712,6 +768,18 @@ def main():
         tokenizer=tokenizer,
         data_collator=data_collator,
     )
+
+    # roberta model
+    # if 'roberta' in model_args.model_name_or_path:
+    #     trainer = CLTrainer(
+    #         model=model,
+    #         args=training_args,
+    #         train_dataset=train_dataset if training_args.do_train else None,
+    #         tokenizer=tokenizer,
+    #         data_collator=data_collator,
+    #         bert_data_collator=bert_data_collator,
+    #         bert_tokenizer=bert_tokenizer
+    #     )
     trainer.model_args = model_args
 
     # Training

@@ -39,6 +39,8 @@ class PolicyNet(nn.Module):
         self.epsilon_min = 0.01  # epsilon的最小值
         self.epsilon_decay = 0.995  # epsilon衰减率
         self.device = device
+
+        
     def forward(self, x1, x2, x3):
         # x1: (num_sent, batch_size, embedding_length) 2,128,768
         # x2: (num_teacher, batch_size, batch_size) 2,128,128
@@ -164,7 +166,6 @@ def optimize_model(memory, policy_net,policy_net_target, critic, critic_target, 
 
         # 准备数据
         action_batch = torch.cat(list(map(lambda a: torch.tensor([a], device=device), batch.action)))
-        print("action_batch",action_batch)
         reward_batch = torch.cat(list(map(lambda r: torch.tensor([r], device=device), batch.reward)))
         old_weights = torch.cat(list(map(lambda r: torch.tensor(r, device=device), batch.weights)))
         old_weights = old_weights.view(-1, 2)

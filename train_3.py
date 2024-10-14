@@ -7,10 +7,12 @@ from typing import Optional, Union, List, Dict, Tuple
 import torch
 import collections
 import random
+
 # sncse
 import json
 import string
 from collections import defaultdict
+
 PUNCTUATION = list(string.punctuation)
 
 from datasets import load_dataset
@@ -33,7 +35,7 @@ from transformers import (
     EvalPrediction,
     BertModel,
     BertForPreTraining,
-    RobertaModel
+    RobertaModel,
 )
 from transformers.tokenization_utils_base import BatchEncoding, PaddingStrategy, PreTrainedTokenizerBase
 from transformers.trainer_utils import is_main_process
@@ -46,11 +48,13 @@ logger = logging.getLogger(__name__)
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
+
 @dataclass
 class ModelArguments:
     """
     Arguments pertaining to which model/config/tokenizer we are going to fine-tune, or train from scratch.
     """
+
     # spearmanr
     baseE_sim_thresh_upp: Optional[float] = field(default=1.1)
     baseE_sim_thresh_low: Optional[float] = field(default=-1.1)
@@ -64,21 +68,14 @@ class ModelArguments:
     # Huggingface's original arguments
     model_name_or_path: Optional[str] = field(
         default=None,
-        metadata={
-            "help": "The model checkpoint for weights initialization."
-            "Don't set if you want to train a model from scratch."
-        },
+        metadata={"help": "The model checkpoint for weights initialization." "Don't set if you want to train a model from scratch."},
     )
     model_type: Optional[str] = field(
         default=None,
         metadata={"help": "If training from scratch, pass a model type from the list: " + ", ".join(MODEL_TYPES)},
     )
-    config_name: Optional[str] = field(
-        default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
-    )
-    tokenizer_name: Optional[str] = field(
-        default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
-    )
+    config_name: Optional[str] = field(default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"})
+    tokenizer_name: Optional[str] = field(default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"})
     cache_dir: Optional[str] = field(
         default=None,
         metadata={"help": "Where do you want to store the pretrained models downloaded from huggingface.co"},
@@ -93,10 +90,7 @@ class ModelArguments:
     )
     use_auth_token: bool = field(
         default=False,
-        metadata={
-            "help": "Will use the token generated when running `transformers-cli login` (necessary to use this script "
-            "with private models)."
-        },
+        metadata={"help": "Will use the token generated when running `transformers-cli login` (necessary to use this script " "with private models)."},
     )
 
     # RankCSE's arguments
@@ -110,19 +104,17 @@ class ModelArguments:
         default=None,
         metadata={
             "help": "The model checkpoint for weights of the second teacher model. If set to None, just the first teacher is used. The embeddings of this model are weighted by (1 - alpha). This can be any transformers-based model; preferably one trained to yield sentence embeddings."
-        }
+        },
     )
     pretrain_model_name_or_path: str = field(
         default=None,
         metadata={
             "help": "The model checkpoint for weights of the second teacher model. If set to None, just the first teacher is used. The embeddings of this model are weighted by (1 - alpha). This can be any transformers-based model; preferably one trained to yield sentence embeddings."
-        }
+        },
     )
     distillation_loss: str = field(
         default="listnet",
-        metadata={
-            "help": "Which loss function to use for ranking distillation."
-        },
+        metadata={"help": "Which loss function to use for ranking distillation."},
     )
     tau2: float = field(
         default=0.05,
@@ -130,64 +122,17 @@ class ModelArguments:
             "help": "Temperature for softmax used in ranking distillation (same as tau_2 in paper). When training with the ListMLE loss, tau3 is set to 0.5 * tau2, following the observations stated in Section 5.3. "
         },
     )
-    alpha_: float = field(
-        default=float(1/3),
-        metadata={
-            "help": "Coefficient to compute a weighted average of similarity scores obtained from the teachers."
-
-        }
-    )
-    beta_: float = field(
-        default=1.0,
-        metadata={
-            "help": "Coefficient used to weight ranking consistency loss"
-        }
-    )
-    gamma_: float = field(
-        default=0.10,
-        metadata={
-            "help": "Coefficient used to weight ranking distillation loss"
-        }
-    )
-
+    alpha_: float = field(default=float(1 / 3), metadata={"help": "Coefficient to compute a weighted average of similarity scores obtained from the teachers."})
+    beta_: float = field(default=1.0, metadata={"help": "Coefficient used to weight ranking consistency loss"})
+    gamma_: float = field(default=0.10, metadata={"help": "Coefficient used to weight ranking distillation loss"})
 
     # SimCSE's arguments
-    temp: float = field(
-        default=0.05,
-        metadata={
-            "help": "Temperature for softmax."
-        }
-    )
-    pooler_type: str = field(
-        default="cls",
-        metadata={
-            "help": "What kind of pooler to use (cls, cls_before_pooler, avg, avg_top2, avg_first_last)."
-        }
-    ) 
-    hard_negative_weight: float = field(
-        default=0,
-        metadata={
-            "help": "The **logit** of weight for hard negatives (only effective if hard negatives are used)."
-        }
-    )
-    do_mlm: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether to use MLM auxiliary objective."
-        }
-    )
-    mlm_weight: float = field(
-        default=0.1,
-        metadata={
-            "help": "Weight for MLM auxiliary objective (only effective if --do_mlm)."
-        }
-    )
-    mlp_only_train: bool = field(
-        default=False,
-        metadata={
-            "help": "Use MLP only during training"
-        }
-    )
+    temp: float = field(default=0.05, metadata={"help": "Temperature for softmax."})
+    pooler_type: str = field(default="cls", metadata={"help": "What kind of pooler to use (cls, cls_before_pooler, avg, avg_top2, avg_first_last)."})
+    hard_negative_weight: float = field(default=0, metadata={"help": "The **logit** of weight for hard negatives (only effective if hard negatives are used)."})
+    do_mlm: bool = field(default=False, metadata={"help": "Whether to use MLM auxiliary objective."})
+    mlm_weight: float = field(default=0.1, metadata={"help": "Weight for MLM auxiliary objective (only effective if --do_mlm)."})
+    mlp_only_train: bool = field(default=False, metadata={"help": "Use MLP only during training"})
 
 
 @dataclass
@@ -196,21 +141,13 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    # Huggingface's original arguments. 
-    dataset_name: Optional[str] = field(
-        default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
-    )
-    dataset_config_name: Optional[str] = field(
-        default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
-    )
-    overwrite_cache: bool = field(
-        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
-    )
+    # Huggingface's original arguments.
+    dataset_name: Optional[str] = field(default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."})
+    dataset_config_name: Optional[str] = field(default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."})
+    overwrite_cache: bool = field(default=False, metadata={"help": "Overwrite the cached training and evaluation sets"})
     validation_split_percentage: Optional[int] = field(
         default=5,
-        metadata={
-            "help": "The percentage of the train set used as validation set in case there's no validation split"
-        },
+        metadata={"help": "The percentage of the train set used as validation set in case there's no validation split"},
     )
     preprocessing_num_workers: Optional[int] = field(
         default=None,
@@ -218,33 +155,19 @@ class DataTrainingArguments:
     )
 
     # SimCSE's arguments
-    train_file: Optional[str] = field(
-        default=None, 
-        metadata={"help": "The training data file (.txt or .csv)."}
-    )
+    train_file: Optional[str] = field(default=None, metadata={"help": "The training data file (.txt or .csv)."})
     max_seq_length: Optional[int] = field(
         default=32,
-        metadata={
-            "help": "The maximum total input sequence length after tokenization. Sequences longer "
-            "than this will be truncated."
-        },
+        metadata={"help": "The maximum total input sequence length after tokenization. Sequences longer " "than this will be truncated."},
     )
     pad_to_max_length: bool = field(
         default=False,
-        metadata={
-            "help": "Whether to pad all samples to `max_seq_length`. "
-            "If False, will pad the samples dynamically when batching to the maximum length in the batch."
-        },
+        metadata={"help": "Whether to pad all samples to `max_seq_length`. " "If False, will pad the samples dynamically when batching to the maximum length in the batch."},
     )
-    mlm_probability: float = field(
-        default=0.15, 
-        metadata={"help": "Ratio of tokens to mask for MLM (only effective if --do_mlm)"}
-    )
+    mlm_probability: float = field(default=0.15, metadata={"help": "Ratio of tokens to mask for MLM (only effective if --do_mlm)"})
 
     # SNCSE args
-    soft_negative_file: str = field(
-        default=None
-    )
+    soft_negative_file: str = field(default=None)
 
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
@@ -258,13 +181,10 @@ class DataTrainingArguments:
 @dataclass
 class OurTrainingArguments(TrainingArguments):
     # Evaluation
-    ## By default, we evaluate STS (dev) during training (for selecting best checkpoints) and evaluate 
+    ## By default, we evaluate STS (dev) during training (for selecting best checkpoints) and evaluate
     ## both STS and transfer tasks (dev) at the end of training. Using --eval_transfer will allow evaluating
     ## both STS and transfer tasks (dev) during training.
-    eval_transfer: bool = field(
-        default=False,
-        metadata={"help": "Evaluate transfer task dev sets (in validation)."}
-    )
+    eval_transfer: bool = field(default=False, metadata={"help": "Evaluate transfer task dev sets (in validation)."})
 
     @cached_property
     @torch_required
@@ -275,6 +195,7 @@ class OurTrainingArguments(TrainingArguments):
             self._n_gpu = 0
         elif is_torch_tpu_available():
             import torch_xla.core.xla_model as xm
+
             device = xm.xla_device()
             self._n_gpu = 0
         elif self.local_rank == -1:
@@ -328,16 +249,8 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    if (
-        os.path.exists(training_args.output_dir)
-        and os.listdir(training_args.output_dir)
-        and training_args.do_train
-        and not training_args.overwrite_output_dir
-    ):
-        raise ValueError(
-            f"Output directory ({training_args.output_dir}) already exists and is not empty."
-            "Use --overwrite_output_dir to overcome."
-        )
+    if os.path.exists(training_args.output_dir) and os.listdir(training_args.output_dir) and training_args.do_train and not training_args.overwrite_output_dir:
+        raise ValueError(f"Output directory ({training_args.output_dir}) already exists and is not empty." "Use --overwrite_output_dir to overcome.")
 
     # Read soft negative sample
     file_path = data_args.soft_negative_file
@@ -422,8 +335,7 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
     else:
         raise ValueError(
-            "You are instantiating a new tokenizer from scratch. This is not supported by this script."
-            "You can do it from another script, save it, and load it from here, using --tokenizer_name."
+            "You are instantiating a new tokenizer from scratch. This is not supported by this script." "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
 
     mask_dict = {"mask_token": tokenizer.mask_token}
@@ -433,11 +345,11 @@ def main():
         # Set hyperparameters of BML loss
         alpha = 0.1
         beta = 0.5
-        if 'roberta' in model_args.model_name_or_path:
+        if "roberta" in model_args.model_name_or_path:
             lambda_ = 5e-4
         else:
             lambda_ = 1e-3
-        if 'roberta' in model_args.model_name_or_path:
+        if "roberta" in model_args.model_name_or_path:
             model = RobertaForCL.from_pretrained(
                 model_args.model_name_or_path,
                 from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -449,9 +361,9 @@ def main():
                 cache_dir=model_args.cache_dir,
                 revision=model_args.model_revision,
                 use_auth_token=True if model_args.use_auth_token else None,
-                model_args=model_args                  
+                model_args=model_args,
             )
-        elif 'bert' in model_args.model_name_or_path:
+        elif "bert" in model_args.model_name_or_path:
             model = BertForCL.from_pretrained(
                 model_args.model_name_or_path,
                 from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -464,7 +376,7 @@ def main():
                 cache_dir=model_args.cache_dir,
                 revision=model_args.model_revision,
                 use_auth_token=True if model_args.use_auth_token else None,
-                model_args=model_args
+                model_args=model_args,
             )
             if model_args.do_mlm:
                 pretrained_model = BertForPreTraining.from_pretrained(model_args.model_name_or_path)
@@ -500,14 +412,14 @@ def main():
     def prepare_features(examples):
         # padding = longest (default)
         #   If no sentence in the batch exceed the max length, then use
-        #   the max sentence length in the batch, otherwise use the 
+        #   the max sentence length in the batch, otherwise use the
         #   max sentence length in the argument and truncate those that
         #   exceed the max length.
         # padding = max_length (when pad_to_max_length, for pressure test)
         #   All sentences are padded/truncated to data_args.max_seq_length.
         total = len(examples[sent0_cname])
 
-        # Avoid "None" fields 
+        # Avoid "None" fields
         for idx in range(total):
             if examples[sent0_cname][idx] is None:
                 examples[sent0_cname][idx] = " "
@@ -515,15 +427,15 @@ def main():
                 examples[sent1_cname][idx] = " "
 
         if Different_Prompt:
-            s1 = '''This sentence : " '''
+            s1 = """This sentence : " """
             s1 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(s1))
-            ss1 = '''This sentence of " '''
+            ss1 = """This sentence of " """
             ss1 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(ss1))
-            if 'roberta' in model_args.model_name_or_path:
-                s2 = ''' " means <mask> .'''
+            if "roberta" in model_args.model_name_or_path:
+                s2 = """ " means <mask> ."""
                 s2 = tokenizer.encode(s2)[1:-1]
-            elif 'bert' in model_args.model_name_or_path:
-                s2 = ''' " means [MASK] .'''
+            elif "bert" in model_args.model_name_or_path:
+                s2 = """ " means [MASK] ."""
                 s2 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(s2))
             else:
                 raise NotImplementedError
@@ -539,32 +451,32 @@ def main():
 
                 tokens0 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(sentence))
                 if len(tokens0) > max_seq_length:
-                    tokens0 = tokens0[: max_seq_length]
+                    tokens0 = tokens0[:max_seq_length]
                 tokens0 = [tokenizer.cls_token_id] + s1 + tokens0 + s2 + [tokenizer.sep_token_id]
                 assert tokens0.count(tokenizer.mask_token_id) == 1
 
                 tokens1 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(sentence))
                 if len(tokens1) > max_seq_length1:
-                    tokens1 = tokens1[: max_seq_length1]
+                    tokens1 = tokens1[:max_seq_length1]
                 tokens1 = [tokenizer.cls_token_id] + ss1 + tokens1 + s2 + [tokenizer.sep_token_id]
                 assert tokens1.count(tokenizer.mask_token_id) == 1
 
                 sent_features["input_ids"].append([tokens0, tokens1])
-                sent_features['attention_mask'].append([[1] * len(tokens0), [1] * len(tokens1)])
-                if 'roberta' not in model_args.model_name_or_path:
-                    sent_features['token_type_ids'].append([[0] * len(tokens0), [0] * len(tokens1)])
+                sent_features["attention_mask"].append([[1] * len(tokens0), [1] * len(tokens1)])
+                if "roberta" not in model_args.model_name_or_path:
+                    sent_features["token_type_ids"].append([[0] * len(tokens0), [0] * len(tokens1)])
 
             return sent_features
         elif Different_Prompt_Negation:
-            s1 = '''This sentence : " '''
+            s1 = """This sentence : " """
             s1 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(s1))
-            ss1 = '''This sentence of " '''
+            ss1 = """This sentence of " """
             ss1 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(ss1))
-            if 'roberta' in model_args.model_name_or_path:
-                s2 = ''' " means <mask> .'''
+            if "roberta" in model_args.model_name_or_path:
+                s2 = """ " means <mask> ."""
                 s2 = tokenizer.encode(s2)[1:-1]
-            elif 'bert' in model_args.model_name_or_path:
-                s2 = ''' " means [MASK] .'''
+            elif "bert" in model_args.model_name_or_path:
+                s2 = """ " means [MASK] ."""
                 s2 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(s2))
             else:
                 raise NotImplementedError
@@ -578,32 +490,30 @@ def main():
 
                 sentence = examples[sent0_cname][idx]
 
-
                 negation_sentence = negation.get(sentence, "Not " + sentence)
-
 
                 tokens0 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(sentence))
                 if len(tokens0) > max_seq_length:
-                    tokens0 = tokens0[: max_seq_length]
+                    tokens0 = tokens0[:max_seq_length]
                 tokens0 = [tokenizer.cls_token_id] + s1 + tokens0 + s2 + [tokenizer.sep_token_id]
                 assert tokens0.count(tokenizer.mask_token_id) == 1
 
                 tokens1 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(sentence))
                 if len(tokens1) > max_seq_length1:
-                    tokens1 = tokens1[: max_seq_length1]
+                    tokens1 = tokens1[:max_seq_length1]
                 tokens1 = [tokenizer.cls_token_id] + ss1 + tokens1 + s2 + [tokenizer.sep_token_id]
                 assert tokens1.count(tokenizer.mask_token_id) == 1
 
                 tokens2 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(negation_sentence))
                 if len(tokens2) > max_seq_length1:
-                    tokens2 = tokens2[: max_seq_length1]
+                    tokens2 = tokens2[:max_seq_length1]
                 tokens2 = [tokenizer.cls_token_id] + ss1 + tokens2 + s2 + [tokenizer.sep_token_id]
                 assert tokens2.count(tokenizer.mask_token_id) == 1
 
                 sent_features["input_ids"].append([tokens0, tokens1, tokens2])
-                sent_features['attention_mask'].append([[1] * len(tokens0), [1] * len(tokens1), [1] * len(tokens2)])
-                if 'roberta' in model_args.model_name_or_path:
-                    sent_features['token_type_ids'].append([[0] * len(tokens0), [0] * len(tokens1), [0] * len(tokens2)])
+                sent_features["attention_mask"].append([[1] * len(tokens0), [1] * len(tokens1), [1] * len(tokens2)])
+                if "roberta" in model_args.model_name_or_path:
+                    sent_features["token_type_ids"].append([[0] * len(tokens0), [0] * len(tokens1), [0] * len(tokens2)])
 
             return sent_features
         else:
@@ -630,10 +540,10 @@ def main():
         mlm_probability: float = data_args.mlm_probability
 
         def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
-            special_keys = ['input_ids', 'attention_mask', 'token_type_ids', 'mlm_input_ids', 'mlm_labels']
+            special_keys = ["input_ids", "attention_mask", "token_type_ids", "mlm_input_ids", "mlm_labels"]
             bs = len(features)
             if bs > 0:
-                num_sent = len(features[0]['input_ids'])
+                num_sent = len(features[0]["input_ids"])
             else:
                 return
             flat_features = []
@@ -661,10 +571,8 @@ def main():
                 del batch["label_ids"]
 
             return batch
-        
-        def mask_tokens(
-            self, inputs: torch.Tensor, special_tokens_mask: Optional[torch.Tensor] = None
-        ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        def mask_tokens(self, inputs: torch.Tensor, special_tokens_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
             """
             Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
             """
@@ -673,9 +581,7 @@ def main():
             # We sample a few tokens in each sequence for MLM training (with probability `self.mlm_probability`)
             probability_matrix = torch.full(labels.shape, self.mlm_probability)
             if special_tokens_mask is None:
-                special_tokens_mask = [
-                    self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
-                ]
+                special_tokens_mask = [self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()]
                 special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool)
             else:
                 special_tokens_mask = special_tokens_mask.bool()
@@ -703,7 +609,6 @@ def main():
     training_args.tau2 = model_args.tau2
     training_args.alpha_ = model_args.alpha_
 
-
     trainer = CLTrainer(
         model=model,
         args=training_args,
@@ -715,11 +620,7 @@ def main():
 
     # Training
     if training_args.do_train:
-        model_path = (
-            model_args.model_name_or_path
-            if (model_args.model_name_or_path is not None and os.path.isdir(model_args.model_name_or_path))
-            else None
-        )
+        model_path = model_args.model_name_or_path if (model_args.model_name_or_path is not None and os.path.isdir(model_args.model_name_or_path)) else None
         train_result = trainer.train(model_path=model_path)
         trainer.save_model()  # Saves the tokenizer too for easy upload
 
@@ -749,6 +650,7 @@ def main():
     #                 writer.write(f"{key} = {value}\n")
     #
     # return results
+
 
 def _mp_fn(index):
     # For xla_spawn (TPUs)

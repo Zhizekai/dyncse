@@ -16,6 +16,7 @@ from transformers.file_utils import (
 )
 from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOutputWithPoolingAndCrossAttentions
 
+
 class MLPLayer(nn.Module):
     """
     Head for getting sentence representations over RoBERTa/BERT's CLS representation.
@@ -32,6 +33,7 @@ class MLPLayer(nn.Module):
 
         return x
 
+
 class Similarity(nn.Module):
     """
     Dot product or cosine similarity
@@ -45,13 +47,15 @@ class Similarity(nn.Module):
     def forward(self, x, y):
         return self.cos(x, y) / self.temp
 
+
 class Divergence(nn.Module):
     """
     Jensen-Shannon divergence, used to measure ranking consistency between similarity lists obtained from examples with two different dropout masks
     """
+
     def __init__(self, beta_):
         super(Divergence, self).__init__()
-        self.kl = nn.KLDivLoss(reduction='batchmean', log_target=True)
+        self.kl = nn.KLDivLoss(reduction="batchmean", log_target=True)
         self.eps = 1e-7
         self.beta_ = beta_
 
@@ -60,10 +64,12 @@ class Divergence(nn.Module):
         m = (0.5 * (p + q)).log().clamp(min=self.eps)
         return 0.5 * (self.kl(m, p.log()) + self.kl(m, q.log()))
 
+
 class ListNet(nn.Module):
     """
     ListNet objective for ranking distillation; minimizes the cross entropy between permutation [top-1] probability distribution and ground truth obtained from teacher
     """
+
     def __init__(self, tau, gamma_):
         super(ListNet, self).__init__()
         self.teacher_temp_scaled_sim = Similarity(tau / 2)
@@ -71,15 +77,17 @@ class ListNet(nn.Module):
         self.gamma_ = gamma_
 
     def forward(self, teacher_top1_sim_pred, student_top1_sim_pred):
-        p = F.log_softmax(student_top1_sim_pred.fill_diagonal_(float('-inf')), dim=-1)
-        q = F.softmax(teacher_top1_sim_pred.fill_diagonal_(float('-inf')), dim=-1)
-        loss = -(q*p).nansum()  / q.nansum()
+        p = F.log_softmax(student_top1_sim_pred.fill_diagonal_(float("-inf")), dim=-1)
+        q = F.softmax(teacher_top1_sim_pred.fill_diagonal_(float("-inf")), dim=-1)
+        loss = -(q * p).nansum() / q.nansum()
         return self.gamma_ * loss
+
 
 class ListMLE(nn.Module):
     """
     ListMLE objective for ranking distillation; maximizes the liklihood of the ground truth permutation (sorted indices of the ranking lists obtained from teacher)
     """
+
     def __init__(self, tau, gamma_):
         super(ListMLE, self).__init__()
         self.temp_scaled_sim = Similarity(tau)
@@ -99,7 +107,7 @@ class ListMLE(nn.Module):
         y_true_sorted, indices = y_true_shuffled.sort(descending=True, dim=-1)
         mask = y_true_sorted == -1
         preds_sorted_by_true = torch.gather(y_pred_shuffled, dim=1, index=indices)
-        preds_sorted_by_true[mask] = float('-inf')
+        preds_sorted_by_true[mask] = float("-inf")
         max_pred_values, _ = preds_sorted_by_true.max(dim=1, keepdim=True)
         preds_sorted_by_true_minus_max = preds_sorted_by_true - max_pred_values
         cumsums = torch.cumsum(preds_sorted_by_true_minus_max.exp().flip(dims=[1]), dim=1).flip(dims=[1])
@@ -107,6 +115,7 @@ class ListMLE(nn.Module):
         observation_loss[mask] = 0.0
 
         return self.gamma_ * torch.mean(torch.sum(observation_loss, dim=1))
+
 
 class Pooler(nn.Module):
     """
@@ -117,6 +126,7 @@ class Pooler(nn.Module):
     'avg_top2': average of the last two layers.
     'avg_first_last': average of the first and the last layers.
     """
+
     def __init__(self, pooler_type):
         super().__init__()
         self.pooler_type = pooler_type
@@ -127,10 +137,10 @@ class Pooler(nn.Module):
         pooler_output = outputs.pooler_output
         hidden_states = outputs.hidden_states
 
-        if self.pooler_type in ['cls_before_pooler', 'cls']:
+        if self.pooler_type in ["cls_before_pooler", "cls"]:
             return last_hidden[:, 0]
         elif self.pooler_type == "avg":
-            return ((last_hidden * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1))
+            return (last_hidden * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1)
         elif self.pooler_type == "avg_first_last":
             first_hidden = hidden_states[1]
             last_hidden = hidden_states[-1]
@@ -143,6 +153,7 @@ class Pooler(nn.Module):
             return pooled_result
         else:
             raise NotImplementedError
+
 
 def _get_ranks(x: torch.Tensor) -> torch.Tensor:
     x_rank = x.argsort(dim=1)
@@ -168,6 +179,7 @@ def cal_spr_corr(x: torch.Tensor, y: torch.Tensor):
 
     return torch.mm(xn, torch.transpose(yn, 0, 1))
 
+
 # def cl_init(cls, config):
 #     """
 #     Contrastive learning class init function.
@@ -179,11 +191,12 @@ def cal_spr_corr(x: torch.Tensor, y: torch.Tensor):
 #     cls.sim = Similarity(temp=cls.model_args.temp)
 #     cls.init_weights()
 
+
 def cl_init(cls, config):
     """
     Contrastive learning class init function. 只在bertforCL 和 robertaforCL 中使用
     """
-    cls.pooler_type = cls.model_args.pooler_type
+    cls.pooler_type = cls.model_args.pooler_type 
     cls.pooler = Pooler(cls.model_args.pooler_type)
     if cls.model_args.pooler_type == "cls":
         cls.mlp = MLPLayer(config)
@@ -197,7 +210,9 @@ def cl_init(cls, config):
     #     raise NotImplementedError
     cls.init_weights()
 
-def cl_forward(cls,
+
+def cl_forward(
+    cls,
     encoder,
     input_ids=None,
     attention_mask=None,
@@ -234,10 +249,10 @@ def cl_forward(cls,
     num_sent = input_ids.size(1)
 
     # Flatten input for encoding
-    input_ids = input_ids.view((-1, input_ids.size(-1))) # (bs * num_sent, len)
-    attention_mask = attention_mask.view((-1, attention_mask.size(-1))) # (bs * num_sent len)
+    input_ids = input_ids.view((-1, input_ids.size(-1)))  # (bs * num_sent, len)
+    attention_mask = attention_mask.view((-1, attention_mask.size(-1)))  # (bs * num_sent len)
     if token_type_ids is not None:
-        token_type_ids = token_type_ids.view((-1, token_type_ids.size(-1))) # (bs * num_sent, len)
+        token_type_ids = token_type_ids.view((-1, token_type_ids.size(-1)))  # (bs * num_sent, len)
 
     torch.cuda.empty_cache()
     # Get raw embeddings
@@ -252,7 +267,6 @@ def cl_forward(cls,
         output_hidden_states=True,
         return_dict=True,
     )
-
 
     # Obtain sentence embeddings from [MASK] token
     index = input_ids == cls.mask_token_id
@@ -294,7 +308,7 @@ def sentemb_forward(
         head_mask=head_mask,
         inputs_embeds=inputs_embeds,
         output_attentions=output_attentions,
-        output_hidden_states=True if cls.pooler_type in ['avg_top2', 'avg_first_last'] else False,
+        output_hidden_states=True if cls.pooler_type in ["avg_top2", "avg_first_last"] else False,
         return_dict=True,
     )
 
@@ -352,7 +366,8 @@ class BertForCL(BertPreTrainedModel):
         self.beta = beta  # 0.3
         self.lambda_ = lambda_  # 1e-3
 
-    def forward(self,
+    def forward(
+        self,
         input_ids=None,
         attention_mask=None,
         token_type_ids=None,
@@ -368,7 +383,7 @@ class BertForCL(BertPreTrainedModel):
         mlm_labels=None,
         first_teacher_top1_sim_pred=None,
         second_teacher_top1_sim_pred=None,
-# spearmanr
+        # spearmanr
         distances1=None,
         distances2=None,
         distances3=None,
@@ -377,12 +392,14 @@ class BertForCL(BertPreTrainedModel):
         baseE_vecs2=None,
         policy_model1=None,
         policy_model2=None,
-        steps_done = None,
-        sim_tensor1 = None,
-        sim_tensor2=None
+        steps_done=None,
+        sim_tensor1=None,
+        sim_tensor2=None,
     ):
         if sent_emb:
-            return sentemb_forward(self, self.bert,
+            return sentemb_forward(
+                self,
+                self.bert,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 token_type_ids=token_type_ids,
@@ -395,7 +412,9 @@ class BertForCL(BertPreTrainedModel):
                 return_dict=return_dict,
             )
         else:
-            return cl_forward(self, self.bert,
+            return cl_forward(
+                self,
+                self.bert,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 token_type_ids=token_type_ids,
@@ -425,7 +444,6 @@ class BertForCL(BertPreTrainedModel):
             )
 
 
-
 class RobertaForCL(RobertaPreTrainedModel):
     _keys_to_ignore_on_load_missing = [r"position_ids"]
 
@@ -438,13 +456,24 @@ class RobertaForCL(RobertaPreTrainedModel):
         if self.model_args.do_mlm:
             self.lm_head = RobertaLMHead(config)
 
+        self.first_states = None
+        self.first_rewards = None
+        self.first_actions = None
+        self.first_weights = None
+        self.second_states = None
+        self.second_rewards = None
+        self.second_actions = None
+        self.second_weights = None
+        self.best_acc = 0
+
         cl_init(self, config)
 
         self.alpha = alpha  # 0.1
         self.beta = beta  # 0.3
         self.lambda_ = lambda_  # 5e-4
 
-    def forward(self,
+    def forward(
+        self,
         input_ids=None,
         attention_mask=None,
         token_type_ids=None,
@@ -458,10 +487,25 @@ class RobertaForCL(RobertaPreTrainedModel):
         sent_emb=False,
         mlm_input_ids=None,
         mlm_labels=None,
-        teacher_top1_sim_pred=None,
+        first_teacher_top1_sim_pred=None,
+        second_teacher_top1_sim_pred=None,
+        # RL
+        distances1=None,
+        distances2=None,
+        distances3=None,
+        distances4=None,
+        baseE_vecs1=None,
+        baseE_vecs2=None,
+        policy_model1=None,
+        policy_model2=None,
+        steps_done=None,
+        sim_tensor1=None,
+        sim_tensor2=None,
     ):
         if sent_emb:
-            return sentemb_forward(self, self.roberta,
+            return sentemb_forward(
+                self,
+                self.roberta,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 token_type_ids=token_type_ids,
@@ -474,7 +518,9 @@ class RobertaForCL(RobertaPreTrainedModel):
                 return_dict=return_dict,
             )
         else:
-            return cl_forward(self, self.roberta,
+            return cl_forward(
+                self,
+                self.roberta,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 token_type_ids=token_type_ids,
@@ -487,5 +533,6 @@ class RobertaForCL(RobertaPreTrainedModel):
                 return_dict=return_dict,
                 mlm_input_ids=mlm_input_ids,
                 mlm_labels=mlm_labels,
-                teacher_top1_sim_pred=teacher_top1_sim_pred,
+                first_teacher_top1_sim_pred=first_teacher_top1_sim_pred,
+                second_teacher_top1_sim_pred=second_teacher_top1_sim_pred,
             )
