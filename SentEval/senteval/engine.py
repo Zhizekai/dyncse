@@ -25,6 +25,7 @@ from senteval.probing import *
 
 class SE(object):
     def __init__(self, params, batcher, prepare=None):
+        print("初始化SE")
         # parameters
         params = utils.dotdict(params)
         params.usepytorch = True if 'usepytorch' not in params else params.usepytorch

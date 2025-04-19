@@ -17,114 +17,6 @@ import os
 
 epsilon = 1e-8
 
-
-class PolicyNet(nn.Module):
-    """
-    策略网络
-    """
-
-    def __init__(self, num_teacher, embedding_length, device, batch_size):
-        super(PolicyNet, self).__init__()
-        self.num_teacher = num_teacher  # 假设有两个老师模型
-
-        # 定义权重和偏置
-        self.W1 = nn.Parameter(torch.FloatTensor(embedding_length, 128).uniform_(-0.5, 0.5))  # 768,128
-        # self.W2 = nn.Parameter(torch.FloatTensor(128, 128).uniform_(-0.5, 0.5)) #128,128
-        self.W2 = nn.Parameter(torch.FloatTensor(batch_size, 128).uniform_(-0.5, 0.5))  # 128,128
-        self.W3 = nn.Parameter(torch.FloatTensor(num_teacher, 128).uniform_(-0.5, 0.5))  # 2,128
-        self.b = nn.Parameter(torch.FloatTensor(1, 128).uniform_(-0.5, 0.5))
-
-        self.fc_alpha = nn.Parameter(torch.FloatTensor(128, 1).uniform_(-0.5, 0.5))  # 输出 alpha
-        self.fc_beta = nn.Parameter(torch.FloatTensor(128, 1).uniform_(-0.5, 0.5))  # 输出 beta
-
-        self.epsilon = 1.0  # 初始epsilon值
-        self.epsilon_min = 0.01  # epsilon的最小值
-        self.epsilon_decay = 0.995  # epsilon衰减率
-        self.device = device
-
-    def forward(self, x1, x2, x3):
-        # x1: (num_sent, batch_size, embedding_length) 2,128,768
-        # x2: (num_teacher, batch_size, batch_size) 2,128,128
-        # x3: (num_teacher, 1) 1,2
-
-        # 将输入与相应的权重相乘
-        x1_ = torch.matmul(x1, self.W1)  # 2,128,128
-        x2_ = torch.matmul(x2, self.W2)  # 2,128,128  这个出问题了 x2 最后一个维度成64 了，原来是（2,256,256）现在是（2， 256， 64）
-
-        # 将第三个输入乘以其权重
-        x3_ = torch.matmul(x3, self.W3)  # 1,128
-        # 将所有结果相加并加上偏置
-        scaled_out = torch.relu(x1_ + x2_ + x3_ + self.b)
-        # scaled_out = torch.clamp(scaled_out, min=1e-5, max=10 - 1e-5) #2,128,128
-        # 重塑scaled_out以匹配全连接层的期望输入维度
-        scaled_out_reshaped = scaled_out.view(-1, 128)  # 形状现在是 [-1, 128]
-
-        # 添加全连接层以生成形状为 (batch_size*num_teacher, num_teacher) 的输出
-        # 输出两个参数 alpha 和 beta
-        alpha = torch.matmul(scaled_out_reshaped, self.fc_alpha)
-        beta = torch.matmul(scaled_out_reshaped, self.fc_beta)
-
-        alpha = F.softplus(alpha).mean() + 50
-        # alpha = torch.relu(alpha).mean() + 50
-        beta = F.softplus(beta).mean() + 50
-        # beta = torch.relu(beta).mean() + 50
-        weights = [alpha, beta]
-        return weights
-
-    def take_action(self, state):
-        # state当中有三个变量 embeddings_tensor,soft_lable,concatenated_loss，都是get_environment_state 函数生成的
-
-        # 直接调用网络来生成一个概率  state tensor([[510.9451, 519.7139]]
-        weights = self.forward(*state)  # 这个是策略网络的前向传播输出，weights当中 是[alpha, beta]，*state 是解包成单独的参数传进去
-
-        # 计算概率分布
-        # dist = torch.distributions.Normal(weights[0].float(), weights[1].float())
-        dist = torch.distributions.beta.Beta(weights[0].float(), weights[1].float())  # weights[0]是alpha，weights[1]是beta
-        action = dist.sample().to(self.device)
-
-        # 更新epsilon值，但不让它低于最小值
-        self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
-        # print("policy action：",action)
-        # input()
-        return action, weights
-
-    def test_policy(self, state):
-        avg_probability = self.forward(*state).to(self.device)  # 获取动作概率
-        action = torch.distributions.Bernoulli(avg_probability).sample().to(self.device)  # 选择概率最高的动作
-        return action, avg_probability
-
-
-# 假设你有一个表示概率的张量
-probs = torch.tensor([0.5], requires_grad=True)
-Transition = namedtuple("Transion", ("state", "next_state", "action", "weights", "reward", "value"))
-
-
-# 经验回放技术，DQN里面用到的
-
-
-class ReplayMemory(object):
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.memory = []
-        self.position = 0
-
-    def push(self, *args):
-        if len(self.memory) < self.capacity:
-            self.memory.append(None)  # 增加一个空元素
-        self.memory[self.position] = Transition(*args)
-        self.position = (self.position + 1) % self.capacity
-
-    def sample(self):
-        return self.memory
-
-    def __len__(self):
-        return len(self.memory)
-
-    def clear(self):
-        self.memory = []  # 清空memory
-        self.position = 0  # 重置position为0
-
-
 # ddpg 的目标网络软更新
 def soft_update(net, target_net):
     for param_target, param in zip(target_net.parameters(), net.parameters()):
@@ -340,8 +232,118 @@ def optimize_model(memory, policy_net, policy_net_target, critic, critic_target,
         # critic.optimizer.step() # 更新critic网络
 
 
-# 评价网络
+# 假设你有一个表示概率的张量
+probs = torch.tensor([0.5], requires_grad=True)
+Transition = namedtuple("Transion", ("state", "next_state", "action", "weights", "reward", "value"))
+
+
+class ReplayMemory(object):
+    """ 经验回放池 """
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.memory = []
+        self.position = 0
+
+    def push(self, *args):
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)  # 增加一个空元素
+        self.memory[self.position] = Transition(*args)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self):
+        return self.memory
+
+    def __len__(self):
+        return len(self.memory)
+
+    def clear(self):
+        self.memory = []  # 清空memory
+        self.position = 0  # 重置position为0
+
+
+
+
+class PolicyNet(nn.Module):
+    """ 策略网络 """
+
+    def __init__(self, num_teacher, embedding_length, device, batch_size):
+        super(PolicyNet, self).__init__()
+        self.num_teacher = num_teacher  # 假设有两个老师模型
+
+        # 定义权重和偏置
+        self.W1 = nn.Parameter(torch.FloatTensor(embedding_length, 128).uniform_(-0.5, 0.5))  # 768,128
+        self.W2 = nn.Parameter(torch.FloatTensor(batch_size, 128).uniform_(-0.5, 0.5))  # 128,128
+        # self.W3 = nn.Parameter(torch.FloatTensor(num_teacher, 128).uniform_(-0.5, 0.5))  # 2,128
+        # 学生模型的句子表征的相似度矩阵
+        self.W3 = nn.Parameter(torch.FloatTensor(batch_size, 128).uniform_(-0.5, 0.5))  # 128,128
+        
+        
+        self.b = nn.Parameter(torch.FloatTensor(1, 128).uniform_(-0.5, 0.5))
+
+        self.fc_alpha = nn.Parameter(torch.FloatTensor(128, 1).uniform_(-0.5, 0.5))  # 输出 alpha
+        self.fc_beta = nn.Parameter(torch.FloatTensor(128, 1).uniform_(-0.5, 0.5))  # 输出 beta
+
+        self.epsilon = 1.0  # 初始epsilon值
+        self.epsilon_min = 0.01  # epsilon的最小值
+        self.epsilon_decay = 0.995  # epsilon衰减率
+        self.device = device
+
+    def forward(self, x1, x2, x3):
+        # x1: (num_sent, batch_size, embedding_length) 2,128,768
+        # x2: (num_teacher, batch_size, batch_size) 2,128,128
+        # x3: (num_teacher, 1) 1,2
+
+        # 将输入与相应的权重相乘
+        x1_ = torch.matmul(x1, self.W1)  # 2,128,128
+        x2_ = torch.matmul(x2, self.W2)  # 2,128,128  这个出问题了 x2 最后一个维度成64 了，原来是（2,256,256）现在是（2， 256， 64）
+        x3_ = torch.matmul(x3, self.W3)  # 1,128
+        
+        
+        # 将所有结果相加并加上偏置
+        scaled_out = torch.relu(x1_ + x2_ + x3_ + self.b)
+        # scaled_out = torch.clamp(scaled_out, min=1e-5, max=10 - 1e-5) #2,128,128
+        # 重塑scaled_out以匹配全连接层的期望输入维度
+        scaled_out_reshaped = scaled_out.view(-1, 128)  # 形状现在是 [-1, 128]
+
+        # 添加全连接层以生成形状为 (batch_size*num_teacher, num_teacher) 的输出
+        # 输出两个参数 alpha 和 beta
+        alpha = torch.matmul(scaled_out_reshaped, self.fc_alpha)
+        beta = torch.matmul(scaled_out_reshaped, self.fc_beta)
+
+        alpha = F.softplus(alpha).mean() + 50
+        # alpha = torch.relu(alpha).mean() + 50
+        beta = F.softplus(beta).mean() + 50
+        # beta = torch.relu(beta).mean() + 50
+        weights = [alpha, beta]
+        return weights
+
+    def take_action(self, state):
+        # state当中有三个变量 embeddings_tensor,soft_lable,concatenated_loss，都是get_environment_state 函数生成的
+
+        # 直接调用网络来生成一个概率  state tensor([[510.9451, 519.7139]]
+        weights = self.forward(*state)  # 这个是策略网络的前向传播输出，weights当中 是[alpha, beta]，*state 是解包成单独的参数传进去
+
+        # 计算概率分布
+        # dist = torch.distributions.Normal(weights[0].float(), weights[1].float())
+        dist = torch.distributions.beta.Beta(weights[0].float(), weights[1].float())  # weights[0]是alpha，weights[1]是beta
+        action = dist.sample().to(self.device)
+
+        # 更新epsilon值，但不让它低于最小值
+        self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
+        # print("policy action：",action)
+        # input()
+        return action, weights
+
+    def test_policy(self, state):
+        avg_probability = self.forward(*state).to(self.device)  # 获取动作概率
+        action = torch.distributions.Bernoulli(avg_probability).sample().to(self.device)  # 选择概率最高的动作
+        return action, avg_probability
+
+
+
+
 class Critic(nn.Module):
+    """ 价值网络，评价网络 """
     def __init__(
         self,
         input_dim,
@@ -356,7 +358,10 @@ class Critic(nn.Module):
         # 定义权重和偏置
         self.W1 = nn.Parameter(torch.FloatTensor(embedding_length, 128).uniform_(-0.5, 0.5))  # 768,128
         self.W2 = nn.Parameter(torch.FloatTensor(batch_size, 128).uniform_(-0.5, 0.5))  # 128,128
-        self.W3 = nn.Parameter(torch.FloatTensor(num_teacher, 128).uniform_(-0.5, 0.5))  # 2,128
+        # self.W3 = nn.Parameter(torch.FloatTensor(num_teacher, 128).uniform_(-0.5, 0.5))  # 2,128
+
+        # 学生模型的句子表征的相似度矩阵
+        self.W3 = nn.Parameter(torch.FloatTensor(batch_size, 128).uniform_(-0.5, 0.5))  # 128,128
         self.W4 = nn.Parameter(torch.FloatTensor(1, 128).uniform_(-0.5, 0.5))
         self.b = nn.Parameter(torch.FloatTensor(1, 128).uniform_(-0.5, 0.5))  # 1,128
 
@@ -383,10 +388,7 @@ class Critic(nn.Module):
 
         # 将第三个输入乘以其权重
         x3_ = torch.matmul(x3, self.W3)  # 1,128
-        # print("action:",action)
         action_ = torch.matmul(action.view((1, 1)), self.W4)  # 1,128
-        # print("action:",action)
-        # input()
 
         # 将所有结果相加并加上偏置
         scaled_out = torch.sigmoid(x1_ + x2_ + x3_ + action_ + self.b)
@@ -400,3 +402,5 @@ class Critic(nn.Module):
         critic_out = self.model(scaled_out_reshaped)
         critic_out = critic_out.mean()
         return critic_out
+
+

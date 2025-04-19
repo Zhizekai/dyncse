@@ -5,15 +5,21 @@
 # --first_teacher_name_or_path $MODEL_DIR/sts_model/rank-encoder-sncse-bert-base-uncased/
 # --second_teacher_name_or_path $MODEL_DIR/sts_model/unsup-simcse-bert-large-uncased/ \
 
-PROJECT_DIR=/mnt/nfs-storage-pvc-n26-20241218/rizejin/zzk/dyncse/dyncse
-MODEL_DIR=/mnt/nfs-storage-pvc-n26-20241218/rizejin/zzk/dyncse
-CHECKPOINT_DIR=checkpoint-11-24
+# PROJECT_DIR=/mnt/nfs-storage-pvc-n26-20241218/rizejin/zzk/dyncse/dyncse
+PROJECT_DIR=/data/home/wangzhilan/zzk/dyncse/dyncse
+
+# MODEL_DIR=/mnt/nfs-storage-pvc-n26-20241218/rizejin/zzk/dyncse
+MODEL_DIR=/data/home/wangzhilan/zzk/dyncse
+CHECKPOINT_DIR=checkpoint-2025-04-18
 SEED=61507
-CUDA_VISIBLE_DEVICES=0 python -m debugpy --listen 49359 --wait-for-client  train_1.py \
+CUDA_VISIBLE_DEVICES=0 
+# --t_lmb 0.001
+# python -m debugpy --listen 49359 --wait-for-client
+python  train_1.py \
     --baseE_sim_thresh_upp 0.9999 \
     --baseE_sim_thresh_low 0.5 \
     --baseE_lmb 0.05 \
-    --t_lmb 0.001 \
+    --t_lmb 0.1 \
     --simf Spearmanr \
     --loss_type weighted_sum \
     --corpus_vecs $PROJECT_DIR/rankcse/index_vecs_rank1/corpus_0.01_sncse.npy \
@@ -21,7 +27,7 @@ CUDA_VISIBLE_DEVICES=0 python -m debugpy --listen 49359 --wait-for-client  train
     --model_name_or_path $MODEL_DIR/sts_model/bert-base-uncased/ \
     --train_file $MODEL_DIR/sts_model/corpus/wiki1m_for_simcse.txt \
     --output_dir runs/$CHECKPOINT_DIR \
-    --num_train_epochs 1 \
+    --num_train_epochs 3 \
     --per_device_train_batch_size 128 \
     --learning_rate 3e-5 \
     --max_seq_length 32 \
@@ -36,8 +42,8 @@ CUDA_VISIBLE_DEVICES=0 python -m debugpy --listen 49359 --wait-for-client  train
     --temp 0.05 \
     --do_train \
     --fp16 \
-    --first_teacher_name_or_path $MODEL_DIR/sts_model/sup-simcse-bert-base-uncased/  \
-    --second_teacher_name_or_path $MODEL_DIR/sts_model/sup-simcse-bert-large-uncased/ \
+    --first_teacher_name_or_path $MODEL_DIR/sts_model/rank-encoder-sncse-bert-base-uncased/  \
+    --second_teacher_name_or_path $MODEL_DIR/sts_model/unsup-simcse-bert-large-uncased/ \
     --distillation_loss listmle \
     --alpha_ 0.50 \
     --beta_ 1.0 \

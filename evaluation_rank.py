@@ -14,7 +14,9 @@ from train_1 import ModelArguments, DataTrainingArguments, OurTrainingArguments
 
 
 # Set up logger
-logging.basicConfig(format="%(asctime)s : %(message)s", level=logging.DEBUG)
+# logging.basicConfig(format="%(asctime)s : %(message)s", level=logging.DEBUG)
+# 设置⽇志等级和输出⽇志格式
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s')
 
 # Set PATHs
 PATH_TO_SENTEVAL = "./SentEval"
@@ -25,6 +27,7 @@ sys.path.insert(0, PATH_TO_SENTEVAL)
 import senteval
 
 PUNCTUATION = list(string.punctuation)
+eval_align_unform_mode = True
 
 
 def print_table(task_names, scores):
@@ -56,12 +59,13 @@ def main():
     args = parser.parse_args()
 
     # Load transformers' model checkpoint
+
     # bert
     model = BertModel.from_pretrained(args.model_name_or_path)
+    tokenizer = BertTokenizer(vocab_file=os.path.join(args.model_name_or_path, "vocab.txt"))
+    
     # roberta
     # model = RobertaModel.from_pretrained(args.model_name_or_path)
-
-    tokenizer = BertTokenizer(vocab_file=os.path.join(args.model_name_or_path, "vocab.txt"))
     # tokenizer = RobertaTokenizer(vocab_file=os.path.join(args.model_name_or_path, "vocab.json"), merges_file=os.path.join(args.model_name_or_path, "merges.txt"))
 
 
@@ -73,7 +77,11 @@ def main():
 
     # Set up the tasks
     if args.task_set == "sts":
-        args.tasks = ["STS12", "STS13", "STS14", "STS15", "STS16", "STSBenchmark", "SICKRelatedness"]
+        if eval_align_unform_mode:
+            args.tasks = [ "STSBenchmark"]
+        else:
+            args.tasks = ["STS12", "STS13", "STS14", "STS15", "STS16", "STSBenchmark", "SICKRelatedness"]
+        
     elif args.task_set == "transfer":
         args.tasks = ["MR", "CR", "MPQA", "SUBJ", "SST2", "TREC", "MRPC"]
     elif args.task_set == "full":
@@ -102,10 +110,12 @@ def main():
             batch = [[word.decode("utf-8") for word in s] for s in batch]
 
         sentences = [" ".join(s) for s in batch]
-        sentences = [s + " ." if s.strip()[-1] not in PUNCTUATION else s for s in sentences]
-        # bert
-        sentences = ["""This sentence : " """ + s + """ " means [MASK] .""" for s in sentences]
-        # roberta
+        # sentences = [s + " ." if s.strip() and s.strip()[-1] not in PUNCTUATION else s for s in sentences]
+        
+        
+        # bert 使用 promptBert方法
+        # sentences = ["""This sentence : " """ + s + """ " means [MASK] .""" for s in sentences]
+        # roberta 使用 promptBert方法
         # sentences = ["""This sentence : " """ + s + """ " means <mask> .""" for s in sentences]
 
         # Tokenization
@@ -126,7 +136,12 @@ def main():
         with torch.no_grad():
             outputs = model(**batch, output_hidden_states=True, return_dict=True)
             last_hidden = outputs.last_hidden_state
-        sent_vecs = last_hidden[batch["input_ids"] == tokenizer.mask_token_id].cpu()
+        
+        # 测试 align_ uniform模式 并且是bert模型
+        sent_vecs = outputs.last_hidden_state[:,0].cpu() 
+        
+        # 原始代码
+        # sent_vecs = last_hidden[batch["input_ids"] == tokenizer.mask_token_id].cpu()
         return sent_vecs
 
     results = {}
@@ -163,7 +178,7 @@ def main():
         print_table(task_names, scores)
 
     elif args.mode == "test" or args.mode == "fasttest":
-        # 这个是最后一步输出的东西，不是过程
+        # 这是输出的结果表格，不是过程
         print("------ %s ------" % (args.mode))
 
         task_names = []

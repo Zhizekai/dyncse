@@ -1,3 +1,6 @@
+import os
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
 import logging
 import math
 import os
@@ -41,16 +44,30 @@ from transformers.data.data_collator import DataCollatorForLanguageModeling
 from transformers.file_utils import cached_property, torch_required, is_torch_available, is_torch_tpu_available
 from rankcse.models_rl_2 import RobertaForCL, BertForCL
 from rankcse.trainers_rl_5 import CLTrainer
+# from rankcse.trainers_DDPG import CLTrainer
 
 logger = logging.getLogger(__name__)
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
+
+
+# cpu_num = 2 # 这里设置成你想运行的CPU个数
+# os.environ ['OMP_NUM_THREADS'] = str(cpu_num)
+# os.environ ['OPENBLAS_NUM_THREADS'] = str(cpu_num)
+# os.environ ['MKL_NUM_THREADS'] = str(cpu_num)
+# os.environ ['VECLIB_MAXIMUM_THREADS'] = str(cpu_num)
+# os.environ ['NUMEXPR_NUM_THREADS'] = str(cpu_num)
+# torch.set_num_threads(cpu_num)
 
 @dataclass
 class ModelArguments:
     """
     Arguments pertaining to which model/config/tokenizer we are going to fine-tune, or train from scratch.
     """
+    # 强化学习参数
+    rl_learning_rate: Optional[float] = field(default=1e-4, metadata={"help": "强化学习的学习率"})
+
+
     # spearmanr
     baseE_sim_thresh_upp: Optional[float] = field(default=1.1)
     baseE_sim_thresh_low: Optional[float] = field(default=-1.1)
@@ -110,6 +127,13 @@ class ModelArguments:
         default=None,
         metadata={
             "help": "The model checkpoint for weights of the second teacher model. If set to None, just the first teacher is used. The embeddings of this model are weighted by (1 - alpha). This can be any transformers-based model; preferably one trained to yield sentence embeddings."
+        }
+    )
+
+    third_teacher_name_or_path: str = field(
+        default=None,
+        metadata={
+            "help": "The model checkpoint for weights of the third teacher model. If set to None, just the first teacher is used. The embeddings of this model are weighted by (1 - alpha). This can be any transformers-based model; preferably one trained to yield sentence embeddings."
         }
     )
     pretrain_model_name_or_path: str = field(
@@ -770,6 +794,9 @@ def main():
 
     training_args.first_teacher_name_or_path = model_args.first_teacher_name_or_path
     training_args.second_teacher_name_or_path = model_args.second_teacher_name_or_path
+    training_args.third_teacher_name_or_path = model_args.third_teacher_name_or_path
+
+
     training_args.tau2 = model_args.tau2
     training_args.alpha_ = model_args.alpha_
 

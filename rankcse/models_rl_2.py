@@ -110,7 +110,6 @@ class ListMLE(nn.Module):
 
         return self.gamma_ * torch.mean(torch.sum(observation_loss, dim=1))
 
-
 class Pooler(nn.Module):
     """
     Parameter-free poolers to get the sentence embedding
@@ -206,8 +205,8 @@ def cl_init(cls, config):
 
 
 def cl_forward(
-    cls,
-    encoder,
+    cls,  # cls 是 当前类，传进来的是self
+    encoder,  # bert 模型对象
     input_ids=None,
     attention_mask=None,
     token_type_ids=None,
@@ -249,7 +248,7 @@ def cl_forward(
         token_type_ids = token_type_ids.view((-1, token_type_ids.size(-1)))  # (bs * num_sent, len)
 
     torch.cuda.empty_cache()
-    # Get raw embeddings
+    # Get raw embeddings，
     outputs = encoder(
         input_ids,
         attention_mask=attention_mask,
@@ -267,9 +266,9 @@ def cl_forward(
     last_hidden_state = outputs.last_hidden_state[index]
     assert last_hidden_state.size() == torch.Size([batch_size * num_sent, last_hidden_state.size(-1)])
 
-    # During training, add an extra MLP layer with activation function
+    # 这个 pooler_type 就是cls，配置文件里面指定的。 During training, add an extra MLP layer with activation function
     if cls.pooler_type == "cls":
-        pooler_output = cls.mlp(last_hidden_state)
+        pooler_output = cls.mlp(last_hidden_state)  # 这个mlp 是自己定义的，具体定义在当前文件的MLPLayer 
     else:
         pooler_output = last_hidden_state
 
@@ -341,6 +340,8 @@ class BertForCL(BertPreTrainedModel):
         #         params[_] = torch.zeros_like(self.bert.state_dict()[_])
         #
         # self.bert.load_state_dict(params)
+
+        # 这个类是学生模型类，但是西面这些属性都是智能体才能用到的东西
         self.first_states = None
         self.first_rewards = None
         self.first_actions = None
@@ -349,6 +350,8 @@ class BertForCL(BertPreTrainedModel):
         self.second_rewards = None
         self.second_actions = None
         self.second_weights = None
+
+        self.kd_loss_for_RL = None
         self.best_acc = 0
 
         if self.model_args.do_mlm:
@@ -377,7 +380,7 @@ class BertForCL(BertPreTrainedModel):
         mlm_labels=None,
         first_teacher_top1_sim_pred=None,
         second_teacher_top1_sim_pred=None,
-        # spearmanr
+        # spearmanr 斯皮尔曼
         distances1=None,
         distances2=None,
         distances3=None,
@@ -389,6 +392,7 @@ class BertForCL(BertPreTrainedModel):
         steps_done=None,
         sim_tensor1=None,
         sim_tensor2=None,
+
     ):
         if sent_emb:
             return sentemb_forward(
@@ -458,6 +462,8 @@ class RobertaForCL(RobertaPreTrainedModel):
         self.second_rewards = None
         self.second_actions = None
         self.second_weights = None
+
+        self.kd_loss_for_RL = None
         self.best_acc = 0
 
         cl_init(self, config)

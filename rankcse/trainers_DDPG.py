@@ -94,19 +94,8 @@ from rankcse.teachers import Teacher
 from rankcse.Agent_4 import PolicyNet, Critic, ReplayMemory, optimize_model
 import string
 
-# Set path to SentEval
-PATH_TO_MADDPG = "./rankcse/maddpg"
-
-# Import SentEval
-sys.path.insert(0, PATH_TO_MADDPG)
-from MADDPG import MADDPG
-from Buffer import Buffer
-from Agent import Agent
-
 PUNCTUATION = list(string.punctuation)
 logger = logging.get_logger(__name__)
-
-
 class Similarity(nn.Module):
     """
     Dot product or cosine similarity
@@ -196,8 +185,6 @@ class CLTrainer(Trainer):
     #         data_collator=data_collator)
     #     self.bert_tokenizer = bert_tokenizer
 
-    
-
 
     def evaluate(self, eval_dataset: Optional[Dataset] = None, ignore_keys: Optional[List[str]] = None,
         metric_key_prefix: str = "eval",
@@ -242,19 +229,17 @@ class CLTrainer(Trainer):
 
         stsb_spearman = results["STSBenchmark"]["dev"]["spearman"][0]
         sickr_spearman = results["SICKRelatedness"]["dev"]["spearman"][0]
-        acc = (stsb_spearman + sickr_spearman) / 2  # 当前准确度
+        acc = (stsb_spearman + sickr_spearman) / 2
         rewards = acc - self.model.best_acc
-        # self.model.first_rewards += 10000 * rewards
-        # self.model.second_rewards += 10000 * rewards
-
-        # self.model.kd_loss_for_RL = {"agent_1":-loss * 0.5, "agent_2":-loss * 0.5}
-        
+        self.model.first_rewards += 10000 * rewards
+        self.model.second_rewards += 10000 * rewards
         if self.model.best_acc:
             self.model.best_acc = (acc + self.model.best_acc) / 2
         else:
             self.model.best_acc = acc
-    
-
+        # rewards = acc
+        # self.model.first_rewards += 10000 * rewards
+        # self.model.second_rewards += 10000 * rewards
 
         metrics = {"eval_stsb_spearman": stsb_spearman, "eval_sickr_spearman": sickr_spearman, "eval_avg_sts": (stsb_spearman + sickr_spearman) / 2}
         logger.info(metrics)
@@ -380,8 +365,6 @@ class CLTrainer(Trainer):
         The main difference between ours and Huggingface's original implementation is that we
         also load model_args when reloading best checkpoints for evaluation.
         """
-
-        self.tmp_state = {} # 初始化类状态
         # This might change the seed so needs to run first.
         self._hp_search_setup(trial)
 
@@ -514,7 +497,7 @@ class CLTrainer(Trainer):
             if not self.args.ignore_data_skip:
                 logger.info(f"  Will skip the first {epochs_trained} epochs then the first {steps_trained_in_current_epoch} " "batches in the first epoch.")
 
-        """ 初始化教师模型 RankCSE - Initialize the teacher """
+        # 初始化教师模型 RankCSE - Initialize the teacher
         teacher = None
         if self.args.second_teacher_name_or_path is None:
             if "rank" in self.args.first_teacher_name_or_path:
@@ -535,12 +518,12 @@ class CLTrainer(Trainer):
             else:
                 first_pooler = "cls_before_pooler" if ("simcse" in self.args.first_teacher_name_or_path or "diffcse" in self.args.first_teacher_name_or_path) else "avg"
                 first_teacher = Teacher(model_name_or_path=self.args.first_teacher_name_or_path, pooler=first_pooler)
-            
             second_pooler = "cls_before_pooler" if ("simcse" in self.args.second_teacher_name_or_path or "diffcse" in self.args.second_teacher_name_or_path) else "avg"
             second_teacher = Teacher(model_name_or_path=self.args.second_teacher_name_or_path, pooler=second_pooler)
             sentence_vecs = torch.tensor(np.load(self.model_args.corpus_vecs)).to(first_teacher.device)
-     
-
+            # 单教师情况
+            # sentence_vecs = torch.tensor(np.load(self.model_args.second_corpus_vecs)).to(first_teacher.device)
+            # sentence_vecs = sentence_vecs.half()
             sentence_vecs = normalize(sentence_vecs, p=2.0, dim=1)
             if self.model_args.second_corpus_vecs is not None:
                 sentence_vecs_2 = torch.tensor(np.load(self.model_args.second_corpus_vecs)).to(second_teacher.device)
@@ -551,9 +534,11 @@ class CLTrainer(Trainer):
 
         """ 初始化强化学习模型，策略模型和价值模型 """
         tau = 0.1
-        # exploration_prob = 0.1
+        exploration_prob = 0.1
         RL_train = True
         if RL_train:
+     
+
             # Reinforcement Learning DDPG
             # bert 的 embedding_length是768 bert large 是 1024
             embedding_length = 768
@@ -575,10 +560,13 @@ class CLTrainer(Trainer):
             Critic_model2.load_state_dict(Critic_model1.state_dict())
             Critic_model1_target.load_state_dict(Critic_model1.state_dict())
             Critic_model2_target.load_state_dict(Critic_model1.state_dict())
-        else:
-            print("load")
+            # policy_model = PolicyNet(2, 768, self.args.device, batch_size=self.args.per_device_train_batch_size).to(self.args.device)  # 策略网络
 
-        # samplecnt = 5
+        else:
+
+            print("load model")
+
+        samplecnt = 5
         INITIAL_MEMORY = 10000
         MEMORY_SIZE = 10 * INITIAL_MEMORY
         first_memory = ReplayMemory(MEMORY_SIZE)
@@ -586,7 +574,7 @@ class CLTrainer(Trainer):
         TARGET_UPDATE = 100
         step_counter = 0
         # PSEUDO_EPISODE_LENGTH = 125 # 伪章节长度
-        PSEUDO_EPISODE_LENGTH = 25  # 伪章节长度, replay buffer 的深度，积累多少步经验进行训练
+        PSEUDO_EPISODE_LENGTH = 5  # 伪章节长度, replay buffer 的深度，积累多少步经验进行训练
         first_previous_state = None
         second_previous_state = None
         step_counter = 0
@@ -595,39 +583,9 @@ class CLTrainer(Trainer):
         global_step = 0
         decay_steps = 5
         decay_rate = 0.95
+        learning_rate = 1e-4
         first_memory.clear()
         second_memory.clear()
-
-        """ 初始化多智能体强化学习模型 """
-
-        buffer_capacity = int(512)
-        batch_size = 1024
-        actor_lr = 0.01
-        critic_lr = 0.01
-        learn_interval = 64
-        random_steps = 128
-        ma_tau = 0.02
-        ma_gamma = 0.95
-        ma_batch_size = 15
-
-        # 创建一个文件夹用来保存模型结果
-        env_dir = os.path.join('./results', "maddpg")
-        if not os.path.exists(env_dir):
-            os.makedirs(env_dir)
-        total_files = len([file for file in os.listdir(env_dir)])
-        result_dir = os.path.join(env_dir, f'{total_files + 1}')
-        os.makedirs(result_dir)
-
-
-        # 初始化环境和maddpg 算法对象
-        # env, dim_info = get_env(args.env_name, args.episode_length)
-        dim_info = {"agent_1":[1024,1],"agent_2":[1024,1]}
-        maddpg = MADDPG(dim_info, buffer_capacity, batch_size, actor_lr, critic_lr, result_dir)
-        agent_num = 2   
-        agents = ["agent_1", "agent_2"]
-        
-    
-
 
         # Update the references
         self.callback_handler.model = self.model
@@ -680,8 +638,6 @@ class CLTrainer(Trainer):
             # RL
             total_reward = 0.0
             global_step += 1
-
-
             # epoch_iterator 就是train_dataloader
             for step, inputs in enumerate(epoch_iterator):
                 # Skip past any already trained steps if resuming training
@@ -757,6 +713,12 @@ class CLTrainer(Trainer):
                         embeddings2 = embeddings2.view((batch_size, num_sent, -1))
                         second_teacher_z1, second_teacher_z2 = embeddings2[:, 0], embeddings2[:, 1]  # 第二个教师模型的两个句子（正样本对）的embedding
 
+                        # if self.args.fp16:
+                        #     first_teacher_z1 = first_teacher_z1.to(torch.float16)
+                        #     first_teacher_z2 = first_teacher_z2.to(torch.float16)
+                        #     second_teacher_z1 = second_teacher_z1.to(torch.float16)
+                        #     second_teacher_z2 = second_teacher_z2.to(torch.float16)
+
                         z1T = first_teacher_z1
                         z2T = first_teacher_z2
                         dist1 = torch.mm(first_teacher_z1, torch.transpose(sentence_vecs, 0, 1))
@@ -784,15 +746,7 @@ class CLTrainer(Trainer):
                     inputs["policy_model1"] = policy_model1
                     inputs["policy_model2"] = policy_model2
                     inputs["steps_done"] = step
-
-                    # maddpg进入inputs
-                    self.tmp_state["random_steps"] = random_steps
-                    self.tmp_state["dim_info"] = dim_info
-                    self.tmp_state["maddpg"] = maddpg
-                    self.tmp_state["agents"] = agents
-                    self.tmp_state["agent_num"] = agent_num
-                   
-
+              
                 """ 进行一步训练，计算损失值, 并且梯度回传 """
                 if ((step + 1) % self.args.gradient_accumulation_steps != 0) and self.args.local_rank != -1:
                     # Avoid unnecessary DDP synchronization since there will be no backward pass on this example. model.no_sync() 是多卡训练相关
@@ -803,8 +757,6 @@ class CLTrainer(Trainer):
                     # 这个tr_loss 只是作为训练的指标进行记录
                     tr_loss += self.training_step(model, inputs)  
                 self._total_flos += self.floating_point_ops(inputs)
-
-
 
                 """ 更新学生模型参数，积累到一定梯度才会一起更新参数 """
                 if (step + 1) % self.args.gradient_accumulation_steps == 0 or (
@@ -851,85 +803,71 @@ class CLTrainer(Trainer):
                     self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval=[])
                     
 
-                    """ 多智能体强强化学习部分 """
+                    """ 强化学习部分 智能体和环境交互获得action 和 策略价值  reinforce learning"""
                     with torch.no_grad():
+                         # first_states是first_teacher_state，因为上面执行了training_step，training_step里面有compute_loss ，compute_loss里面有对first_states的定义
+                        value1_state = model.first_states 
+                        value1_state = [s.float().to(self.args.device) for s in value1_state]  # len(value1_state) is 3
 
-                        # 环境接受智能体的动作字典，返回每个智能体的下一个观测状态，reward 等一些信息
-                        # next_obs, reward, done,_, info = env.step(action)
+                        # 后面还要append 进去action。。。。这个7812 只要batch_size 改了，7812 也要成倍减小
+                        # 7812
+                        if step < 7812:
+                            action_1, weights_1 = policy_model1.take_action(value1_state)
+                            next_q_value_1 = Critic_model1(*value1_state, action_1)
+                        else:
+                            next_q_value_1 = next_q_value_1
 
-                        # 读取model 当中的 -loss作为reward ，model中的state作为next_obs，done 就是是否训练完
-
-                        def get_rl_env_state(sim_tensor, z1, z2, cos_sim):
-
-                            """
-                            输出当前环境状态，
-                            Args:
-                                sim_tensor 是两个教师模型生成句子表征的相似度矩阵摞一起
-                                z1 z2 是学生模型的正样本对的句子表征
-                                cos_sim 是学生模型的正样本对的句子表征的相似度矩阵
-                            Return:
-                                state torch.Size([2, 128, 768 + 128 + 128]) 最终智能体观测到的状态
-                            """
-                            
-                            # 获取环境状态
-                            state = []
-                            x1 = torch.cat([z1, z1], dim=0)  # torch.Size([128 + 128, 768])
-                            x2 = sim_tensor  # torch.Size([ 128 + 128, 128])
-
-                            # 学生模型的句子表征的相似度矩阵 torch.size([128 + 128, 128])
-                            x3 = torch.cat([cos_sim, cos_sim], dim=0)
-
-                            # size([256, 1024])
-                            state = torch.cat((x1, sim_tensor, x3), dim=1)
-                            return state
-                        # 使用学生模型的embedding 和 教师模型的embedding 初始化环境
-                        # obs, _ = env.reset()  # 原始版本 obs 是个dict {"agent_1": [1,2,3]}
-
-                        #  获取当前智能体state状态
-                        inputs = self._prepare_inputs(inputs)  # 把inputs 放到gpu当中
-                        pooler_output, _ = model(**inputs)
-                        z1, z2 = pooler_output[:, 0], pooler_output[:, 1]
-                        cos_sim = cos(z1.unsqueeze(1), z2.unsqueeze(0)) / self.model_args.temp  # cos_sim 就是学生模型的句子表征的相似度矩阵 cos_sim: torch.Size([128, 128])
-                        sim_tensor1 = torch.cat([first_teacher_top1_sim, second_teacher_top1_sim], dim=0)
-                        sim_tensor2 = torch.cat([second_teacher_top1_sim.unsqueeze(0), first_teacher_top1_sim.unsqueeze(0)], dim=0)
-                        next_obs = {agent_id: get_rl_env_state(sim_tensor1, z1, z2, cos_sim) for agent_id in agents}
+                        value2_state = model.second_states
+                        value2_state = [s.float().to(self.args.device) for s in value2_state]
+                        # 7812
+                        if step < 7812:
+                            action_2, weights_2 = policy_model2.take_action(value2_state)
+                            value2 = Critic_model2(*value2_state, action_2)
+                        else:
+                            value2 = value2
                         
-                        if step > 7811:
-                            next_obs = {agent_id: torch.randn((256, 1024), device="cuda") for agent_id in agents}
+                    first_rewards = model.first_rewards
+                    if first_previous_state is not None:
+                        first_next_state = model.first_states
+                        # 存入经验回放池
+                        first_memory.push(first_previous_state, first_next_state, action_1, weights_1, first_rewards, next_q_value_1)
+                    first_previous_state = model.first_states
 
-                        # 获取当前batch 中的obs action agent_reward 等东西
-                        obs = self.tmp_state["maddpg_obs"]
-                        action = self.tmp_state["maddpg_action"] 
-                        agent_reward = self.tmp_state["maddpg_agent_reward"]
-                        reward = model.kd_loss_for_RL
-                        done = {agent_id: 0 for agent_id in agents}
+                    second_rewards = model.second_rewards
+                    if second_previous_state is not None:
+                        second_next_state = model.second_states
+                        second_next_state = [s.float().to(self.args.device) for s in second_next_state]
+                        # second_next_state = second_next_state
+                        second_memory.push(second_previous_state, second_next_state, action_2, weights_2, second_rewards, value2)
+                    second_previous_state = model.second_states  
+                    step_counter += 1
+                    first_total_reward += first_rewards
+                    second_total_reward += second_rewards
 
-                        # 把智能体探索到的 obs [256,1024]，action，reward, next_obs, done 加入replaybuffer 当中，done：1完成 0没有完成
-                        maddpg.add(obs, action, reward, next_obs, done)
+                    # step_counter超过PSEUDO_EPISODE_LENGTH，从replay buffer中获取样本，更新模型参数
+                    if step_counter >= PSEUDO_EPISODE_LENGTH:
+                        """ 更新强化学习的模型参数 """
+                        decayed_learning_rate = learning_rate * (decay_rate**global_step)
+                        logger.info(
+                            f"first_action: {action_1} second_action: {action_2} first_total_reward{first_total_reward} second_total_reward{second_total_reward} first_weights:{weights_1}second_weights:{weights_2} "
+                        )
+                        # agent4的优化函数 ，这里更新价值网络和策略网络的参数
+                        # optimize_model(first_memory, policy_model1,Critic_model1, self.args.device, lr=decayed_learning_rate)
+                        optimize_model(first_memory, policy_model1, policy_model1_target, Critic_model1, Critic_model1_target, self.args.device)
+                        first_memory.clear()
 
-                        for agent_id, r in reward.items():  # update reward
-                            agent_reward[agent_id] += r
-
-                    if step >= 15 and step % learn_interval == 0:  # learn every few steps
-                        maddpg.learn(ma_batch_size, ma_gamma)
-                        maddpg.update_target(ma_tau)
-
-                        # 下一个batch 会通过get_rl_state() 自动把 next_obs 创建出来当做当前 state 来使用，所以不用下面这样赋值
-                        # 更新之后的学生模型生成的embedding 的相似度矩阵就是 next_obs 里面的东西
-                        # obs = next_obs
-
-                        # if (step + 1) % 100 == 0:  # print info every 100 episodes
-                        #    message = f'episode {episode + 1}, '
-                        #    sum_reward = 0
-                        #    for agent_id, r in agent_reward.items():  # record reward
-                        #        message += f'{agent_id}: {r:>4f}; '
-                        #        sum_reward += r
-                        #    message += f'sum reward: {sum_reward}'
-                        #    print(message)
-
-        
-                
-                
+                        # optimize_model(second_memory, policy_model2,Critic_model2, self.args.device, lr=decayed_learning_rate)
+                        optimize_model(second_memory, policy_model2, policy_model2_target, Critic_model2, Critic_model2_target, self.args.device)
+                        second_memory.clear()
+                        step_counter = 0
+                        first_total_reward = 0
+                        second_total_reward = 0
+                        # RL 7800
+                    if step == 7800 and RL_train:
+                        torch.save(policy_model1.state_dict(), "./rl_model/policy_model_ddpg_1.pth")
+                        torch.save(policy_model2.state_dict(), "./rl_model/policy_model_ddpg_2.pth")
+                        torch.save(Critic_model1.state_dict(), "./rl_model/Critic_model_ddpg_1.pth")
+                        torch.save(Critic_model2.state_dict(), "./rl_model/Critic_model_ddpg_2.pth")
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     break
 
@@ -1059,7 +997,6 @@ class CLTrainer(Trainer):
         beta = encoder.beta
         lambda_ = encoder.lambda_
         num_sent = inputs["input_ids"].size(1)
-        # 使用软负样本 
         if num_sent == 3:
             z3 = pooler_output[:, 2]  # 软负样本的词嵌入 Embeddings of soft negative samples 
             temp1 = torch.cosine_similarity(z1, z2, dim=1)  # 正样本对的余弦相似度 Cosine similarity of positive pairs 
@@ -1067,7 +1004,9 @@ class CLTrainer(Trainer):
             temp3 = temp2 - temp1  # similarity difference
             loss1 = torch.relu(temp3 + alpha) + torch.relu(-temp3 - beta)  # BML loss
             loss1 = torch.mean(loss1)
+            # loss1 = 0  # 消融实验，取消注释就是不使用BML loss
             loss_o += loss1 * lambda_  # BML Loss
+       
         
         """ 这一部分都是自定义的损失函数, 后面只在hing loss 当中用到 """
         def _get_ranks(x: torch.Tensor) -> torch.Tensor:
@@ -1104,95 +1043,95 @@ class CLTrainer(Trainer):
         mse = loss_fct_baseE(cos_sim * self.model_args.temp, cos_sim_baseE)
         loss_baseE = torch.sum(mse * cos_sim_baseE_bound) / (torch.sum(cos_sim_baseE_bound) + 1e-8)
         
-        """ 多智能体maddpg 强化学习 """
         
-        def get_rl_env_state(sim_tensor, z1, z2, cos_sim):
+        """ 
+        强化学习部分 
+        下面开始用策略模型预测
+        """
+        def get_environment_state(sim_tensor, inputs, z1, z2, cos_sim, encoder):
 
             """
-            输出当前环境状态，
-            Args:
-                sim_tensor 是两个教师模型生成句子表征的相似度矩阵摞一起, inputs 是个大字典
-                z1 z2 是学生模型的正样本对的句子表征
-                cos_sim 是学生模型的正样本对的句子表征的相似度矩阵
-            Return:
-                state torch.Size([128 + 128 , 768 + 128 + 128]) 最终智能体观测到的状态
+            sim_tensor 是两个教师模型生成句子表征的相似度矩阵摞一起, inputs 是个大字典
+            z1 z2 是学生模型的正样本对的句子表征
+            cos_sim 是学生模型的正样本对的句子表征的相似度矩阵,这玩意没用到
+            encoder是学生模型
+
+            本来loss 就不能当环境，要不然loss 又是reward 又是 state
             """
             
             # 获取环境状态
             state = []
-            x1 = torch.cat([z1, z1], dim=0)  # torch.Size([128 + 128, 768])
-            x2 = sim_tensor  # torch.Size([ 128 + 128, 128])
 
-            # 学生模型的句子表征的相似度矩阵 torch.size([128 + 128, 128])
-            x3 = torch.cat([cos_sim, cos_sim], dim=0)
+            x1 = torch.cat([z1.unsqueeze(0), z1.unsqueeze(0)], dim=0)  # torch.Size([2, 128, 768])
+            x2 = sim_tensor  # torch.Size([2, 128, 128])
 
-            # size([256, 1024])
-            state = torch.cat((x1, sim_tensor, x3), dim=1)
+            # 使用上一个循环的kd_loss作为环境之一，如果是第一个循环那就用全0 代替
+            # 要用loss 做环境的一部分真的需要慎重考虑！！！
+            # encoder.kd_loss_for_RL = None
+            # if encoder.kd_loss_for_RL is None:
+            #     concatenated_loss = torch.zeros(1, 2).to(encoder.device)
+            # else:
+            #     concatenated_loss = torch.cat([encoder.kd_loss_for_RL.unsqueeze(0), encoder.kd_loss_for_RL.unsqueeze(0)], dim=0)
+            #     concatenated_loss = concatenated_loss.unsqueeze(0)  # torch.Size([1, 2])
+            # x3 = concatenated_loss  
+
+            # 学生模型的句子表征的相似度矩阵 torch.size([2,128, 128])
+            x3 = torch.cat([cos_sim.unsqueeze(0), cos_sim.unsqueeze(0)], dim=0)
+
+            state.append(x1)
+            state.append(x2)
+            state.append(x3)
             return state
-        
-        # 使用学生模型的embedding 和 教师模型的embedding 初始化环境
-        # obs, _ = env.reset()  # 原始版本 obs 是个dict {"agent_1": [1,2,3]}
+
+        steps_done = inputs["steps_done"]
         with torch.no_grad():
-            #  获取当前智能体状态
-            sim_tensor1 = torch.cat([first_teacher_top1_sim, second_teacher_top1_sim], dim=0)
+            """
+            inputs.keys()是
+            dict_keys(['input_ids', 'attention_mask', 'first_teacher_top1_sim_pred', 'second_teacher_top1_sim_pred', 'distances1', 'distances2',
+             'baseE_vecs1', 'baseE_vecs2', 'policy_model1', 'policy_model2', 'steps_done', 'sim_tensor1', 'sim_tensor2'])
+            """
+           
+            sim_tensor1 = torch.cat([first_teacher_top1_sim.unsqueeze(0), second_teacher_top1_sim.unsqueeze(0)], dim=0)
             sim_tensor2 = torch.cat([second_teacher_top1_sim.unsqueeze(0), first_teacher_top1_sim.unsqueeze(0)], dim=0)
 
-            agents = self.tmp_state["agents"]
-            maddpg = self.tmp_state["maddpg"]
-            random_steps = self.tmp_state["random_steps"]
-            step = inputs["steps_done"]
+            first_teacher_state  = get_environment_state(sim_tensor1, inputs, z1, z2, cos_sim, encoder)
+            second_teacher_state = get_environment_state(sim_tensor2, inputs, z1, z2, cos_sim, encoder)
+            first_teacher_policy  = inputs["policy_model1"]
+            second_teacher_policy = inputs["policy_model2"]
 
-            obs = {agent_id: get_rl_env_state(sim_tensor1, z1, z2, cos_sim) for agent_id in agents}
-
-            agent_reward = {agent_id: 0 for agent_id in agents}  # agent reward of the current episode
-            
-            
-            action = None
-
-            if step < 7811:
-                if step < random_steps:
-                    # 定义 Beta 分布的参数 alpha 和 beta
-                    alpha = 2.0
-                    beta = 5.0
-                    beta_distribution = torch.distributions.Beta(alpha, beta)
-                    # 改成 0-1 分布当中进行采样 {'agent_1': tensor(0.1400), 'agent_2': tensor(0.2985)}
-                    action = {agent_id: beta_distribution.sample() for agent_id in agents}
-                else:
-
-                    # 保持不变
-                    
-                    action = maddpg.select_action(obs)
-
-                
+            # 利用训练之后的策略网络生成action，这个action是用来融合相似度矩阵
+            # 7812  这里很有可能是因为这里他不够了,最后一个step 不能用了，所以直接把后面的数据跳过了
+            if steps_done < 7812:
+                # avg_probability 是take_action 返回的weights，也就是[alpha,beta]
+                first_action, first_avg_probability = first_teacher_policy.take_action(first_teacher_state)
+                second_action, second_avg_probability = second_teacher_policy.take_action(second_teacher_state)
+                model.first_states  = first_teacher_state
+                model.second_states = second_teacher_state
             else:
                 # first_action  = model.first_actions
                 # second_action = model.second_actions
-                alpha = 2.0
-                beta = 5.0
-                beta_distribution = torch.distributions.Beta(alpha, beta)
-                action = {agent_id: beta_distribution.sample() for agent_id in agents}
 
-                obs = {agent_id: torch.randn((256, 1024), device="cuda") for agent_id in agents}
+                first_action  = 0
+                second_action = 0
+                first_avg_probability  = model.first_weights
+                second_avg_probability = model.second_weights
 
+        if first_action == 0 and second_action == 0:
+            kd_loss = 0 
+            kd_loss_1 = 0
+            kd_loss_2 = 0
 
-            self.tmp_state["maddpg_obs"] = obs  # 所有智能体的观测值
-            self.tmp_state["maddpg_action"] = action  # 所有智能体的acton
-            self.tmp_state["maddpg_agent_reward"] = agent_reward  # 奖励累计
-
-        
-        """ compute loss 中强化学习部分 """
-        if action["agent_1"] == 0 and action["agent_2"] == 0:
-            kd_loss = 0  
         else:
+            # total_probability = first_avg_probability + second_avg_probability
+            # weight1 = first_avg_probability / total_probability
+            # weight2 = second_avg_probability / total_probability
 
             # RL 的损失函数，计算的是两个动作的权重和与1的差值，消融实验中要把这个注释掉
-            total_probability = action["agent_1"] + action["agent_2"]
-            weight1 = action["agent_1"] / total_probability
-            weight2 = action["agent_2"] / total_probability
+            total_probability = first_action + second_action
+            weight1 = first_action / total_probability
+            weight2 = second_action / total_probability
 
-            # teacher_top1_sim_pred = (weight1 * first_teacher_top1_sim) + (weight2 * second_teacher_top1_sim) # 最后通过权重计算得到教师模型的top1相似度
             teacher_top1_sim_pred = (weight1 * first_teacher_top1_sim) + (weight2 * second_teacher_top1_sim) # 最后通过权重计算得到教师模型的top1相似度
-            
             student_top1_sim_pred = cos_sim.clone()  # cos_sim 是学生模型生成的句子表征的相似度矩阵
             
             if self.model_args.distillation_loss == "listnet":
@@ -1202,11 +1141,16 @@ class CLTrainer(Trainer):
             # 排序蒸馏损失值
             kd_loss = distillation_loss_fct(teacher_top1_sim_pred.to(encoder.device), student_top1_sim_pred)  
             # kd_loss = 0 # 消融实验，解注释就是去掉蒸馏学习的损失函数
-        
+
+
+            kd_loss_1 = distillation_loss_fct(first_teacher_top1_sim.to(encoder.device), student_top1_sim_pred) 
+            kd_loss_2 = distillation_loss_fct(second_teacher_top1_sim.to(encoder.device), student_top1_sim_pred) 
+            
 
 
         """ 到此所有loss 全部计算完成，之后开始梯度回传和更新参数 """
-        
+        model.kd_loss_for_RL = kd_loss  # 使用教师模型和学生模型的蒸馏损失当做环境，给强化学习当做环境用的排序蒸馏损失值
+
         
         # RankCSE 正样本对之间的句子表征排序要一直 - self-distillation loss
         # div = Divergence(beta_=self.model_args.beta_)
@@ -1220,13 +1164,10 @@ class CLTrainer(Trainer):
         if self.model_args.loss_type == "hinge":
             loss = torch.max(loss_o, self.model_args.baseE_lmb * loss_baseE)
         elif self.model_args.loss_type == "weighted_sum":  
-            loss = self.model_args.t_lmb * loss_o + kd_loss
+            loss = loss_o + self.model_args.t_lmb * kd_loss
             # 智能体的rewards 是loss 的负数，这个rewards 应该是环境的输出，那么环境就应该是整个训练过程
-            # model.first_rewards = -loss * 0.5  
-            # model.second_rewards = -loss * 0.5
-
-            model.kd_loss_for_RL = {"agent_1":-kd_loss * 0.5, "agent_2":-kd_loss * 0.5}  # 使用教师模型和学生模型的蒸馏损失当做环境，给强化学习当做环境用的排序蒸馏损失值
-
+            model.first_rewards = -kd_loss_1 * 0.5  
+            model.second_rewards = -kd_loss_2 * 0.5
          
         else:
             raise NotImplementedError

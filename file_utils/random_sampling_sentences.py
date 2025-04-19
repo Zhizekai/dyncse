@@ -49,5 +49,7 @@ def main(args):
     return 0
 
 if __name__ == "__main__":
+
+    """ 从wiki 1百万数据集当中随机采样一定数量的句子 """
     args = parse_args()
     _ = main(args)

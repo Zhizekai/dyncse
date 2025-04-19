@@ -16,12 +16,22 @@ import os
 import io
 import numpy as np
 import logging
+import torch
 
 from scipy.stats import spearmanr, pearsonr
 
 from senteval.utils import cosine
 from senteval.sick import SICKEval
+import torch.nn.functional as F
 
+# 设置⽇志等级和输出⽇志格式
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s')
+
+def align_loss(x, y, alpha=2):
+    return (x - y).norm(p=2, dim=1).pow(alpha).mean()
+
+def uniform_loss(x, t=2):
+    return torch.pdist(x, p=2).pow(2).mul(-t).exp().mean().log()
 
 class STSEval(object):
     def loadFile(self, fpath):
@@ -60,54 +70,86 @@ class STSEval(object):
         results = {}
         all_sys_scores = []
         all_gs_scores = []
+
+        ################# newly added
+        all_loss_align = []
+        all_loss_uniform = []
+        #################
         for dataset in self.datasets:
             sys_scores = []
             input1, input2, gs_scores = self.data[dataset]
             for ii in range(0, len(gs_scores), params.batch_size):
                 batch1 = input1[ii:ii + params.batch_size]
                 batch2 = input2[ii:ii + params.batch_size]
+                batch_gs_scores = gs_scores[ii:ii + params.batch_size]  # newly added
 
                 # we assume get_batch already throws out the faulty ones
                 if len(batch1) == len(batch2) and len(batch1) > 0:
                     enc1 = batcher(params, batch1)
                     enc2 = batcher(params, batch2)
+                    
+
+                    ################# newly added
+                    # pos 是 positive的意思
+                    pos_indices = [i for i in range(len(batch_gs_scores)) if batch_gs_scores[i] >= 4.0]
+                    enc1_pos = enc1[pos_indices]
+                    enc2_pos = enc2[pos_indices]
+
+                    enc1_pos = F.normalize(enc1_pos,dim=1)
+                    enc2_pos = F.normalize(enc2_pos,dim=1)
+
+                    loss_align = align_loss(enc1_pos, enc2_pos)
+                    loss_uniform = uniform_loss(torch.cat((enc2_pos, enc2_pos)))
+                    all_loss_align.append(loss_align)
+                    all_loss_uniform.append(loss_uniform)
+                    ################# 
 
                     for kk in range(enc2.shape[0]):
                         sys_score = self.similarity(enc1[kk], enc2[kk])
                         sys_scores.append(sys_score)
+
             all_sys_scores.extend(sys_scores)
             all_gs_scores.extend(gs_scores)
             results[dataset] = {'pearson': pearsonr(sys_scores, gs_scores),
                                 'spearman': spearmanr(sys_scores, gs_scores),
-                                'nsamples': len(sys_scores)}
-            logging.debug('%s : pearson = %.4f, spearman = %.4f' %
+                                'align_loss': np.mean(all_loss_align),  # newly added
+                                'uniform_loss': np.mean(all_loss_uniform)}  # newly added
+            print("打印结果")
+            logging.debug('%s : pearson = %.4f, spearman = %.4f, align_loss = %.4f, uniform_loss = %.4f' %
                           (dataset, results[dataset]['pearson'][0],
-                           results[dataset]['spearman'][0]))
+                           results[dataset]['spearman'][0], 
+                           results[dataset]['align_loss'],
+                           results[dataset]['uniform_loss']))
+            print('%s : pearson = %.4f, spearman = %.4f, align_loss = %.4f, uniform_loss = %.4f' %
+                          (dataset, results[dataset]['pearson'][0],
+                           results[dataset]['spearman'][0], 
+                           results[dataset]['align_loss'],
+                           results[dataset]['uniform_loss']))
 
-        weights = [results[dset]['nsamples'] for dset in results.keys()]
-        list_prs = np.array([results[dset]['pearson'][0] for
-                            dset in results.keys()])
-        list_spr = np.array([results[dset]['spearman'][0] for
-                            dset in results.keys()])
+        # weights = [results[dset]['nsamples'] for dset in results.keys()]
+        # list_prs = np.array([results[dset]['pearson'][0] for
+        #                     dset in results.keys()])
+        # list_spr = np.array([results[dset]['spearman'][0] for
+        #                     dset in results.keys()])
 
-        avg_pearson = np.average(list_prs)
-        avg_spearman = np.average(list_spr)
-        wavg_pearson = np.average(list_prs, weights=weights)
-        wavg_spearman = np.average(list_spr, weights=weights)
-        all_pearson = pearsonr(all_sys_scores, all_gs_scores)
-        all_spearman = spearmanr(all_sys_scores, all_gs_scores)
-        results['all'] = {'pearson': {'all': all_pearson[0],
-                                      'mean': avg_pearson,
-                                      'wmean': wavg_pearson},
-                          'spearman': {'all': all_spearman[0],
-                                       'mean': avg_spearman,
-                                       'wmean': wavg_spearman}}
-        logging.debug('ALL : Pearson = %.4f, \
-            Spearman = %.4f' % (all_pearson[0], all_spearman[0]))
-        logging.debug('ALL (weighted average) : Pearson = %.4f, \
-            Spearman = %.4f' % (wavg_pearson, wavg_spearman))
-        logging.debug('ALL (average) : Pearson = %.4f, \
-            Spearman = %.4f\n' % (avg_pearson, avg_spearman))
+        # avg_pearson = np.average(list_prs)
+        # avg_spearman = np.average(list_spr)
+        # wavg_pearson = np.average(list_prs, weights=weights)
+        # wavg_spearman = np.average(list_spr, weights=weights)
+        # all_pearson = pearsonr(all_sys_scores, all_gs_scores)
+        # all_spearman = spearmanr(all_sys_scores, all_gs_scores)
+        # results['all'] = {'pearson': {'all': all_pearson[0],
+        #                               'mean': avg_pearson,
+        #                               'wmean': wavg_pearson},
+        #                   'spearman': {'all': all_spearman[0],
+        #                                'mean': avg_spearman,
+        #                                'wmean': wavg_spearman}}
+        # logging.debug('ALL : Pearson = %.4f, \
+        #     Spearman = %.4f' % (all_pearson[0], all_spearman[0]))
+        # logging.debug('ALL (weighted average) : Pearson = %.4f, \
+        #     Spearman = %.4f' % (wavg_pearson, wavg_spearman))
+        # logging.debug('ALL (average) : Pearson = %.4f, \
+        #     Spearman = %.4f\n' % (avg_pearson, avg_spearman))
 
         return results
 
@@ -159,6 +201,7 @@ class STS16Eval(STSEval):
 
 class STSBenchmarkEval(STSEval):
     def __init__(self, task_path, seed=1111):
+        print('\n\n***** Transfer task : STSBenchmark*****\n\n')
         logging.debug('\n\n***** Transfer task : STSBenchmark*****\n\n')
         self.seed = seed
         self.samples = []
@@ -204,6 +247,7 @@ class STSBenchmarkFinetune(SICKEval):
         
 class SICKRelatednessEval(STSEval):
     def __init__(self, task_path, seed=1111):
+        print('\n\n***** Transfer task : SICKRelatedness*****\n\n')
         logging.debug('\n\n***** Transfer task : SICKRelatedness*****\n\n')
         self.seed = seed
         self.samples = []
