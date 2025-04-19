@@ -92,11 +92,88 @@ from rankcse.teachers import Teacher
 
 # RL
 from rankcse.Agent_4 import PolicyNet, Critic, ReplayMemory, optimize_model
-
 import string
 
 PUNCTUATION = list(string.punctuation)
 logger = logging.get_logger(__name__)
+class Similarity(nn.Module):
+    """
+    Dot product or cosine similarity
+    """
+
+    def __init__(self, temp):
+        super().__init__()
+        self.temp = temp  # temperature 温度
+        self.cos = nn.CosineSimilarity(dim=-1)
+
+    def forward(self, x, y):
+        return self.cos(x, y) / self.temp
+
+class Divergence(nn.Module):
+    """
+    Jensen-Shannon divergence, used to measure ranking consistency between similarity lists obtained from examples with two different dropout masks
+    散度
+    """
+
+    def __init__(self, beta_):
+        super(Divergence, self).__init__()
+        self.kl = nn.KLDivLoss(reduction="batchmean", log_target=True)
+        self.eps = 1e-7
+        self.beta_ = beta_
+
+    def forward(self, p: torch.tensor, q: torch.tensor):
+        p, q = p.view(-1, p.size(-1)), q.view(-1, q.size(-1))
+        m = (0.5 * (p + q)).log().clamp(min=self.eps)
+        return 0.5 * (self.kl(m, p.log()) + self.kl(m, q.log()))
+
+class ListNet(nn.Module):
+    """
+    ListNet objective for ranking distillation; minimizes the cross entropy between permutation [top-1] probability distribution and ground truth obtained from teacher
+    """
+
+    def __init__(self, tau, gamma_):
+        super(ListNet, self).__init__()
+        self.teacher_temp_scaled_sim = Similarity(tau / 2)
+        self.student_temp_scaled_sim = Similarity(tau)
+        self.gamma_ = gamma_
+
+    def forward(self, teacher_top1_sim_pred, student_top1_sim_pred):
+        p = F.log_softmax(student_top1_sim_pred.fill_diagonal_(float("-inf")), dim=-1)
+        q = F.softmax(teacher_top1_sim_pred.fill_diagonal_(float("-inf")), dim=-1)
+        loss = -(q * p).nansum() / q.nansum()
+        return self.gamma_ * loss
+
+class ListMLE(nn.Module):
+    """
+    ListMLE objective for ranking distillation; maximizes the liklihood of the ground truth permutation (sorted indices of the ranking lists obtained from teacher)
+    """
+
+    def __init__(self, tau, gamma_):
+        super(ListMLE, self).__init__()
+        self.temp_scaled_sim = Similarity(tau)
+        self.gamma_ = gamma_
+        self.eps = 1e-7
+
+    def forward(self, teacher_top1_sim_pred, student_top1_sim_pred):
+        y_pred = student_top1_sim_pred
+        y_true = teacher_top1_sim_pred
+
+        # shuffle for randomised tie resolution
+        random_indices = torch.randperm(y_pred.shape[-1])
+        y_pred_shuffled = y_pred[:, random_indices]
+        y_true_shuffled = y_true[:, random_indices]
+
+        y_true_sorted, indices = y_true_shuffled.sort(descending=True, dim=-1)
+        mask = y_true_sorted == -1
+        preds_sorted_by_true = torch.gather(y_pred_shuffled, dim=1, index=indices)
+        preds_sorted_by_true[mask] = float("-inf")
+        max_pred_values, _ = preds_sorted_by_true.max(dim=1, keepdim=True)
+        preds_sorted_by_true_minus_max = preds_sorted_by_true - max_pred_values
+        cumsums = torch.cumsum(preds_sorted_by_true_minus_max.exp().flip(dims=[1]), dim=1).flip(dims=[1])
+        observation_loss = torch.log(cumsums + self.eps) - preds_sorted_by_true_minus_max
+        observation_loss[mask] = 0.0
+
+        return self.gamma_ * torch.mean(torch.sum(observation_loss, dim=1))
 
 
 class CLTrainer(Trainer):
@@ -386,6 +463,7 @@ class CLTrainer(Trainer):
             total_train_batch_size = self.args.train_batch_size * xm.xrt_world_size()
         else:
             total_train_batch_size = self.args.train_batch_size * self.args.gradient_accumulation_steps * (torch.distributed.get_world_size() if self.args.local_rank != -1 else 1)
+        
         # 获取训练数据迭代器对象
         num_examples = self.num_examples(train_dataloader) if train_dataset_is_sized else total_train_batch_size * self.args.max_steps
 
@@ -405,6 +483,7 @@ class CLTrainer(Trainer):
         # Check if continuing training from a checkpoint
         if model_path and os.path.isfile(os.path.join(model_path, "trainer_state.json")):
             self.state = TrainerState.load_from_json(os.path.join(model_path, "trainer_state.json"))
+            # global_step 是已经完成的update step 的数量
             epochs_trained = self.state.global_step // num_update_steps_per_epoch
             if not self.args.ignore_data_skip:
                 steps_trained_in_current_epoch = self.state.global_step % (num_update_steps_per_epoch)
@@ -432,6 +511,7 @@ class CLTrainer(Trainer):
             # sentence_vecs = sentence_vecs.half()
             sentence_vecs = normalize(sentence_vecs, p=2.0, dim=1)
         else:
+            # 两个教师模型
             if "rank" in self.args.first_teacher_name_or_path:
                 first_teacher = AutoModel.from_pretrained(self.args.first_teacher_name_or_path)
                 first_teacher = first_teacher.to(self.args.device)
@@ -567,12 +647,13 @@ class CLTrainer(Trainer):
         self.control = self.callback_handler.on_train_begin(self.args, self.state, self.control)
 
         # Skip the first epochs_trained epochs to get the random state of the dataloader at the right point.
+        # 跳过已经训练的epoch
         if not self.args.ignore_data_skip:
             for epoch in range(epochs_trained):
                 # We just need to begin an iteration to create the randomization of the sampler.
                 for _ in train_dataloader:
                     break
-        # 开始循环训练从epochs_trained 到num_train_epochs
+        # 开始循环训练从epochs_trained 到num_train_epochs，train 函数里面就开始训练，这里面知道训练结束，是完全结束，跑完所有epoch
         for epoch in range(epochs_trained, num_train_epochs):
             if isinstance(train_dataloader, DataLoader) and isinstance(train_dataloader.sampler, DistributedSampler):
                 train_dataloader.sampler.set_epoch(epoch)  # 分布式采样器设置epoch
@@ -633,7 +714,6 @@ class CLTrainer(Trainer):
                         teacher_inputs["token_type_ids"] = token_type_ids
 
                     # Encode, unflatten, and pass to student
-
                     if teacher is not None:
                         # 只有一个教师模型
                         if "rank" in self.args.first_teacher_name_or_path:
@@ -656,25 +736,22 @@ class CLTrainer(Trainer):
                         dist2 = torch.mm(z2T, torch.transpose(sentence_vecs, 0, 1))
                         cos = nn.CosineSimilarity(dim=-1)
                         teacher_top1_sim_pred = cos(z1T.unsqueeze(1), z2T.unsqueeze(0)) / self.args.tau2
-
                     else:
                         # 有两个教师模型
                         if "rank" in self.args.first_teacher_name_or_path:
                             token_type_ids = None
-                            # input()
-                            # 数组越界
                             first_teacher_vecs = first_teacher(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids).last_hidden_state
                             first_teacher_vecs = first_teacher_vecs[input_ids == self.tokenizer.mask_token_id]
                             first_teacher_vecs = normalize(first_teacher_vecs, p=2.0, dim=1)
                             first_teacher_vecs = first_teacher_vecs.view((batch_size, num_sent, first_teacher_vecs.size(-1)))  # (bs, num_sent, hidden)
                             first_teacher_z1, first_teacher_z2 = first_teacher_vecs[:, 0], first_teacher_vecs[:, 1]
                         else:
-                            embeddings1 = first_teacher.encode(teacher_inputs)
-                            embeddings1 = embeddings1.view((batch_size, num_sent, -1))
-                            first_teacher_z1, first_teacher_z2 = embeddings1[:, 0], embeddings1[:, 1]
-                        embeddings2 = second_teacher.encode(teacher_inputs)
+                            embeddings1 = first_teacher.encode(teacher_inputs)  # embeddings1.shape: torch.Size([384, 768])
+                            embeddings1 = embeddings1.view((batch_size, num_sent, -1))  # embeddings1.shape: torch.Size([128, 3, 768])
+                            first_teacher_z1, first_teacher_z2 = embeddings1[:, 0], embeddings1[:, 1]  # 第一个教师模型的两个句子的embedding  torch.Size([128, 768])
+                        embeddings2 = second_teacher.encode(teacher_inputs)  
                         embeddings2 = embeddings2.view((batch_size, num_sent, -1))
-                        second_teacher_z1, second_teacher_z2 = embeddings2[:, 0], embeddings2[:, 1]
+                        second_teacher_z1, second_teacher_z2 = embeddings2[:, 0], embeddings2[:, 1]  # 第二个教师模型的两个句子的embedding
 
                         # if self.args.fp16:
                         #     first_teacher_z1 = first_teacher_z1.to(torch.float16)
@@ -698,7 +775,7 @@ class CLTrainer(Trainer):
                             inputs["distances4"] = second_dist2
 
                         cos = nn.CosineSimilarity(dim=-1)
-                        # first_teacher_z1 是来自教师模型的输出
+                        # first_teacher_top1_sim 是第一个教师模型两个句子表征的相似度
                         first_teacher_top1_sim = cos(first_teacher_z1.unsqueeze(1), first_teacher_z2.unsqueeze(0)) / self.args.tau2
                         second_teacher_top1_sim = cos(second_teacher_z1.unsqueeze(1), second_teacher_z2.unsqueeze(0)) / self.args.tau2
                         first_teacher_top1_sim = first_teacher_top1_sim.to(second_teacher_top1_sim.device)
@@ -724,7 +801,7 @@ class CLTrainer(Trainer):
                     inputs["sim_tensor2"] = sim_tensor2
 
                 if ((step + 1) % self.args.gradient_accumulation_steps != 0) and self.args.local_rank != -1:
-                    # Avoid unnecessary DDP synchronization since there will be no backward pass on this example.
+                    # Avoid unnecessary DDP synchronization since there will be no backward pass on this example. model.no_sync() 是多卡训练相关
                     with model.no_sync():
                         tr_loss += self.training_step(model, inputs)
                 else:
@@ -732,7 +809,7 @@ class CLTrainer(Trainer):
                 self._total_flos += self.floating_point_ops(inputs)
 
                 if (step + 1) % self.args.gradient_accumulation_steps == 0 or (
-                    # last step in epoch but step is always smaller than gradient_accumulation_steps
+                    # last step in epoch but step is always smaller than gradient_accumulation_steps, gradient_accumulation_steps 是梯度累计步，经过这些步之后再更新权重
                     steps_in_epoch <= self.args.gradient_accumulation_steps
                     and (step + 1) == steps_in_epoch
                 ):
@@ -754,7 +831,8 @@ class CLTrainer(Trainer):
                                 self.args.max_grad_norm,
                             )
 
-                    # Optimizer step
+                    # Optimizer step，更新权重，这些都是trainer 源码里面的东西，
+                    # 其实这个train() 方法是原作者从源码里抄了一份，然后再在那个基础上进行修改的，所以看着很大便
                     if is_torch_tpu_available():
                         xm.optimizer_step(self.optimizer)
                     elif self.use_cuda_amp:
@@ -770,9 +848,10 @@ class CLTrainer(Trainer):
                     self.control = self.callback_handler.on_step_end(self.args, self.state, self.control)
                     self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval=[])
 
-                    # RL
+                    # reinforce learning 部分。 智能体和环境交互，获得action 和 策略价值
                     with torch.no_grad():
-                        value1_state = model.first_states  # first_states是first_teacher_state
+                         # first_states是first_teacher_state，因为上面执行了training_step，training_step里面有compute_loss ，compute_loss里面有对first_states的定义
+                        value1_state = model.first_states 
                         value1_state = [s.float().to(self.args.device) for s in value1_state]  # len(value1_state) is 3
 
                         first_rewards = self.model.first_rewards
@@ -892,6 +971,7 @@ class CLTrainer(Trainer):
 
     def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
         """
+        training_step 这一步没做什么操作，其实就是compute_loss 外面套了一层
         Perform a training step on a batch of inputs.
         Subclass and override to inject custom behavior.
         Args:
@@ -904,10 +984,10 @@ class CLTrainer(Trainer):
         Return:
             `torch.Tensor`: The tensor with training loss on this batch.
         """
-        model.train()
-        inputs = self._prepare_inputs(inputs)
+        model.train()  # 开启train 模式，这个model就是学生模型
+        inputs = self._prepare_inputs(inputs)  # 这里面就是把inputs 放到对应的设备上去
 
-        self.use_cuda_amp = False
+        self.use_cuda_amp = False  # amp 是自动混合精度
         if self.use_cuda_amp:
             with autocast():
                 loss = self.compute_loss(model, inputs)
@@ -944,29 +1024,33 @@ class CLTrainer(Trainer):
         first_teacher_top1_sim = inputs["first_teacher_top1_sim_pred"]
         second_teacher_top1_sim = inputs["second_teacher_top1_sim_pred"]
 
-        pooler_output, _ = model(**inputs)  # last_hidden_state torch.Size([384, 768]) pooler_output torch.Size([128, 3, 768])
+        # pooler_output torch.Size([128, 3, 768]) last_hidden_state torch.Size([384, 768]) 
+        # python 的解构赋值是按照顺序的，有可能pooler_output 接收的不是 model 里面的pooler_output，有可能接收的是last_hidden_state
+        # 这部分他给改了，具体改的内容可以看models_rl_2 文件， 这个trainer 传进来的model 就是 models_rl_2当中的 BertForCL 或者 RobertaForCL
+        outputs_temp = model(**inputs)
+        pooler_output, _ = model(**inputs)  
 
-        # Calculate InfoNCE loss
+        # 计算对比学习损失函数 Calculate InfoNCE loss
         temp = self.model_args.temp
         cos = nn.CosineSimilarity(dim=-1)
 
-        z1, z2 = pooler_output[:, 0], pooler_output[:, 1]  # z1 torch.Size([128, 768])
+        z1, z2 = pooler_output[:, 0], pooler_output[:, 1]  # z1和z2 是原始样本和正样本。 z1 torch.Size([128, 768])
         cos_sim = cos(z1.unsqueeze(1), z2.unsqueeze(0)) / temp
         loss_fct = nn.CrossEntropyLoss()
         labels = torch.arange(cos_sim.size(0)).long().to(cos_sim.device)
         loss_o = loss_fct(cos_sim, labels)
 
-        encoder = model.module if isinstance(model, torch.nn.DataParallel) else model
+        encoder = model.module if isinstance(model, torch.nn.DataParallel) else model  # gpu并行计算相关，如果不使用并行计算，encoder 就是model，也就是学生模型
         alpha = encoder.alpha
         beta = encoder.beta
         lambda_ = encoder.lambda_
 
         num_sent = inputs["input_ids"].size(1)
-        # Calculate BML loss
+        # 计算双向边际损失函数，这个是sncse 里的，只有有软负样本的时候才用。Calculate BML loss
         if num_sent == 3:
-            z3 = pooler_output[:, 2]  # Embeddings of soft negative samples
-            temp1 = torch.cosine_similarity(z1, z2, dim=1)  # Cosine similarity of positive pairs
-            temp2 = torch.cosine_similarity(z1, z3, dim=1)  # Cosine similarity of soft negative pairs
+            z3 = pooler_output[:, 2]  # 软负样本的词嵌入 Embeddings of soft negative samples 
+            temp1 = torch.cosine_similarity(z1, z2, dim=1)  # 正样本对的余弦相似度 Cosine similarity of positive pairs 
+            temp2 = torch.cosine_similarity(z1, z3, dim=1)  # 原始样本和软负样本的余弦相似度 Cosine similarity of soft negative pairs
             temp3 = temp2 - temp1  # similarity difference
             loss1 = torch.relu(temp3 + alpha) + torch.relu(-temp3 - beta)  # BML loss
             loss1 = torch.mean(loss1)
@@ -1009,86 +1093,7 @@ class CLTrainer(Trainer):
         mse = loss_fct_baseE(cos_sim * self.model_args.temp, cos_sim_baseE)
         loss_baseE = torch.sum(mse * cos_sim_baseE_bound) / (torch.sum(cos_sim_baseE_bound) + 1e-8)
 
-        class Similarity(nn.Module):
-            """
-            Dot product or cosine similarity
-            """
-
-            def __init__(self, temp):
-                super().__init__()
-                self.temp = temp
-                self.cos = nn.CosineSimilarity(dim=-1)
-
-            def forward(self, x, y):
-                return self.cos(x, y) / self.temp
-
         sim = Similarity(temp=temp)
-
-        class Divergence(nn.Module):
-            """
-            Jensen-Shannon divergence, used to measure ranking consistency between similarity lists obtained from examples with two different dropout masks
-            """
-
-            def __init__(self, beta_):
-                super(Divergence, self).__init__()
-                self.kl = nn.KLDivLoss(reduction="batchmean", log_target=True)
-                self.eps = 1e-7
-                self.beta_ = beta_
-
-            def forward(self, p: torch.tensor, q: torch.tensor):
-                p, q = p.view(-1, p.size(-1)), q.view(-1, q.size(-1))
-                m = (0.5 * (p + q)).log().clamp(min=self.eps)
-                return 0.5 * (self.kl(m, p.log()) + self.kl(m, q.log()))
-
-        class ListNet(nn.Module):
-            """
-            ListNet objective for ranking distillation; minimizes the cross entropy between permutation [top-1] probability distribution and ground truth obtained from teacher
-            """
-
-            def __init__(self, tau, gamma_):
-                super(ListNet, self).__init__()
-                self.teacher_temp_scaled_sim = Similarity(tau / 2)
-                self.student_temp_scaled_sim = Similarity(tau)
-                self.gamma_ = gamma_
-
-            def forward(self, teacher_top1_sim_pred, student_top1_sim_pred):
-                p = F.log_softmax(student_top1_sim_pred.fill_diagonal_(float("-inf")), dim=-1)
-                q = F.softmax(teacher_top1_sim_pred.fill_diagonal_(float("-inf")), dim=-1)
-                loss = -(q * p).nansum() / q.nansum()
-                return self.gamma_ * loss
-
-        class ListMLE(nn.Module):
-            """
-            ListMLE objective for ranking distillation; maximizes the liklihood of the ground truth permutation (sorted indices of the ranking lists obtained from teacher)
-            """
-
-            def __init__(self, tau, gamma_):
-                super(ListMLE, self).__init__()
-                self.temp_scaled_sim = Similarity(tau)
-                self.gamma_ = gamma_
-                self.eps = 1e-7
-
-            def forward(self, teacher_top1_sim_pred, student_top1_sim_pred):
-                y_pred = student_top1_sim_pred
-                y_true = teacher_top1_sim_pred
-
-                # shuffle for randomised tie resolution
-                random_indices = torch.randperm(y_pred.shape[-1])
-                y_pred_shuffled = y_pred[:, random_indices]
-                y_true_shuffled = y_true[:, random_indices]
-
-                y_true_sorted, indices = y_true_shuffled.sort(descending=True, dim=-1)
-                mask = y_true_sorted == -1
-                preds_sorted_by_true = torch.gather(y_pred_shuffled, dim=1, index=indices)
-                preds_sorted_by_true[mask] = float("-inf")
-                max_pred_values, _ = preds_sorted_by_true.max(dim=1, keepdim=True)
-                preds_sorted_by_true_minus_max = preds_sorted_by_true - max_pred_values
-                cumsums = torch.cumsum(preds_sorted_by_true_minus_max.exp().flip(dims=[1]), dim=1).flip(dims=[1])
-                observation_loss = torch.log(cumsums + self.eps) - preds_sorted_by_true_minus_max
-                observation_loss[mask] = 0.0
-
-                return self.gamma_ * torch.mean(torch.sum(observation_loss, dim=1))
-
         def get_environment_state(sim_tensor, inputs, z1, z2, cos_sim, encoder, distillation_loss_fct):
             # 获取环境状态
             state = []
@@ -1117,23 +1122,22 @@ class CLTrainer(Trainer):
             state.append(x3)
             return state
 
-        # 以下代码都是在compute_loss计算损失函数的函数里面
         steps_done = inputs["steps_done"]
         div = Divergence(beta_=self.model_args.beta_)
         if self.model_args.distillation_loss == "listnet":
             distillation_loss_fct = ListNet(self.model_args.tau2, self.model_args.gamma_)
         elif self.model_args.distillation_loss == "listmle":
             distillation_loss_fct = ListMLE(self.model_args.tau2, self.model_args.gamma_)
+
+
         with torch.no_grad():
             """
             inputs.keys()是
             dict_keys(['input_ids', 'attention_mask', 'first_teacher_top1_sim_pred', 'second_teacher_top1_sim_pred', 'distances1', 'distances2',
              'baseE_vecs1', 'baseE_vecs2', 'policy_model1', 'policy_model2', 'steps_done', 'sim_tensor1', 'sim_tensor2'])
             """
-            sim_tensor1 = inputs["sim_tensor1"]  # 这个是第一个教师模型的预测结果
+            sim_tensor1 = inputs["sim_tensor1"]  # 两个句子表征的相似度
             sim_tensor2 = inputs["sim_tensor2"]
-            # get_environment_state 返回的是[embeddings_tensor,soft_label,concatenated_loss]
-            # get_environment_state 返回的就是 next_state
             first_teacher_state  = get_environment_state(sim_tensor1, inputs, z1, z2, cos_sim, encoder, distillation_loss_fct)
             second_teacher_state = get_environment_state(sim_tensor2, inputs, z1, z2, cos_sim, encoder, distillation_loss_fct)
             first_teacher_policy  = inputs["policy_model1"]
@@ -1155,9 +1159,9 @@ class CLTrainer(Trainer):
             # teacher_top1_sim_pred = (action * first_teacher_top1_sim) + (
             #         (1.0 - action) * second_teacher_top1_sim)
         if first_action == 0 and second_action == 0:
-            kd_loss = 0
+            kd_loss = 0  # 蒸馏损失
         else:
-            total_probability = first_avg_probability + second_avg_probability
+            # total_probability = first_avg_probability + second_avg_probability
             # weight1 = first_avg_probability / total_probability
             # weight2 = second_avg_probability / total_probability
 
@@ -1189,7 +1193,7 @@ class CLTrainer(Trainer):
             # loss = loss_o + self.model_args.baseE_lmb * loss_baseE
             # loss = loss_o + self.model_args.t_lmb * kd_loss
             loss = loss_o + self.model_args.t_lmb * kd_loss
-            model.first_rewards = -loss * 0.5
+            model.first_rewards = -loss * 0.5  # 智能体的rewards 是loss 的负数
             model.second_rewards = -loss * 0.5
             # if model.first_actions == 1:
             #     model.first_rewards = -loss

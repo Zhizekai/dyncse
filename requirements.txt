@@ -7,4 +7,3 @@ scikit-learn
 prettytable
 gradio
 torch
-setuptools

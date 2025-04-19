@@ -16,6 +16,7 @@ from transformers.file_utils import (
 )
 from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOutputWithPoolingAndCrossAttentions
 
+
 class MLPLayer(nn.Module):
     """
     Head for getting sentence representations over RoBERTa/BERT's CLS representation.
@@ -64,6 +65,7 @@ class ListNet(nn.Module):
     """
     ListNet objective for ranking distillation; minimizes the cross entropy between permutation [top-1] probability distribution and ground truth obtained from teacher
     """
+
     def __init__(self, tau, gamma_):
         super(ListNet, self).__init__()
         self.teacher_temp_scaled_sim = Similarity(tau / 2)

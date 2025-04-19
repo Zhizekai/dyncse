@@ -5,11 +5,11 @@
 # --first_teacher_name_or_path $MODEL_DIR/sts_model/rank-encoder-sncse-bert-base-uncased/
 # --second_teacher_name_or_path $MODEL_DIR/sts_model/unsup-simcse-bert-large-uncased/ \
 
-PROJECT_DIR=/mnt/nfs-storage-pvc-n28/user_codes/rizeJin/zzk/exp/RankCSE-master
-MODEL_DIR=/mnt/nfs-storage-pvc-n28/user_codes/rizeJin/zzk/exp/
-CHECKPOINT_DIR=checkpoint-09-22
+PROJECT_DIR=/mnt/nfs-storage-pvc-n26-20241218/rizejin/zzk/dyncse/dyncse
+MODEL_DIR=/mnt/nfs-storage-pvc-n26-20241218/rizejin/zzk/dyncse
+CHECKPOINT_DIR=checkpoint-11-24
 SEED=61507
-CUDA_VISIBLE_DEVICES=0 python train_1.py \
+CUDA_VISIBLE_DEVICES=0 python -m debugpy --listen 49359 --wait-for-client  train_1.py \
     --baseE_sim_thresh_upp 0.9999 \
     --baseE_sim_thresh_low 0.5 \
     --baseE_lmb 0.05 \
@@ -18,10 +18,10 @@ CUDA_VISIBLE_DEVICES=0 python train_1.py \
     --loss_type weighted_sum \
     --corpus_vecs $PROJECT_DIR/rankcse/index_vecs_rank1/corpus_0.01_sncse.npy \
     --second_corpus_vecs $PROJECT_DIR/rankcse/simcse_large_index_vecs/corpus_0.01_sncse.npy \
-    --model_name_or_path /mnt/nfs-storage-pvc-n28/user_codes/rizeJin/wzl/model-files/bert-base-uncased/ \
+    --model_name_or_path $MODEL_DIR/sts_model/bert-base-uncased/ \
     --train_file $MODEL_DIR/sts_model/corpus/wiki1m_for_simcse.txt \
     --output_dir runs/$CHECKPOINT_DIR \
-    --num_train_epochs 4 \
+    --num_train_epochs 1 \
     --per_device_train_batch_size 128 \
     --learning_rate 3e-5 \
     --max_seq_length 32 \

@@ -136,7 +136,7 @@ def main():
         result = se.eval(task)
         results[task] = result
 
-    # Print evaluation results
+    # Print evaluation results 
     if args.mode == "dev":
         print("------ %s ------" % (args.mode))
 
@@ -163,6 +163,7 @@ def main():
         print_table(task_names, scores)
 
     elif args.mode == "test" or args.mode == "fasttest":
+        # 这个是最后一步输出的东西，不是过程
         print("------ %s ------" % (args.mode))
 
         task_names = []

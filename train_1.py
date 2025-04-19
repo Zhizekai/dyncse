@@ -17,7 +17,7 @@ from datasets import load_dataset
 
 import transformers
 from transformers import (
-    CONFIG_MAPPING,
+    CONFIG_MAPPING, 
     MODEL_FOR_MASKED_LM_MAPPING,
     AutoConfig,
     AutoModelForMaskedLM,
@@ -315,31 +315,95 @@ class OurTrainingArguments(TrainingArguments):
         return device
 
 
-def main():
-    # See all possible arguments in src/transformers/training_args.py
-    # or by passing the --help flag to this script.
-    # We now keep distinct sets of args, for a cleaner separation of concerns.
+def get_data_collater(data_args, model_args , tokenizer):
+    
+    @dataclass
+    class OurDataCollatorWithPadding:
+        tokenizer: PreTrainedTokenizerBase
+        padding: Union[bool, str, PaddingStrategy] = True
+        max_length: Optional[int] = None
+        pad_to_multiple_of: Optional[int] = None
+        do_mlm: bool = False
+        mlm_probability: float = 0.15
 
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, OurTrainingArguments))
-    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        # If we pass only one argument to the script and it's the path to a json file,
-        # let's parse it to get our arguments.
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
-    else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
+            special_keys = ['input_ids', 'attention_mask', 'token_type_ids', 'mlm_input_ids', 'mlm_labels']
+            bs = len(features)
+            if bs > 0:
+                num_sent = len(features[0]['input_ids'])
+            else:
+                return
+            flat_features = []
+            for feature in features:
+                for i in range(num_sent):
+                    flat_features.append({k: feature[k][i] if k in special_keys else feature[k] for k in feature})
 
-    if (
-        os.path.exists(training_args.output_dir)
-        and os.listdir(training_args.output_dir)
-        and training_args.do_train
-        and not training_args.overwrite_output_dir
-    ):
-        raise ValueError(
-            f"Output directory ({training_args.output_dir}) already exists and is not empty."
-            "Use --overwrite_output_dir to overcome."
-        )
+            batch = self.tokenizer.pad(
+                flat_features,
+                padding=self.padding,
+                max_length=self.max_length,
+                pad_to_multiple_of=self.pad_to_multiple_of,
+                return_tensors="pt",
+            )
+            # bert_batch
+            if self.do_mlm:
+                batch["mlm_input_ids"], batch["mlm_labels"] = self.mask_tokens(batch["input_ids"])
 
-    # Read soft negative sample
+            batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
+            if "label" in batch:
+                batch["labels"] = batch["label"]
+                del batch["label"]
+            if "label_ids" in batch:
+                batch["labels"] = batch["label_ids"]
+                del batch["label_ids"]
+
+            return batch
+        
+        def mask_tokens(
+            self, inputs: torch.Tensor, special_tokens_mask: Optional[torch.Tensor] = None
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
+            """
+            Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
+            """
+            inputs = inputs.clone()
+            labels = inputs.clone()
+            # We sample a few tokens in each sequence for MLM training (with probability `self.mlm_probability`)
+            probability_matrix = torch.full(labels.shape, self.mlm_probability)
+            if special_tokens_mask is None:
+                special_tokens_mask = [
+                    self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
+                ]
+                special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool)
+            else:
+                special_tokens_mask = special_tokens_mask.bool()
+
+            probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
+            masked_indices = torch.bernoulli(probability_matrix).bool()
+            labels[~masked_indices] = -100  # We only compute loss on masked tokens
+
+            # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
+            indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
+            inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+
+            # 10% of the time, we replace masked input tokens with random word
+            indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
+            random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long)
+            inputs[indices_random] = random_words[indices_random]
+
+            # The rest of the time (10% of the time) we keep the masked input tokens unchanged
+            return inputs, labels
+
+    # OurDataCollatorWithPadding(tokenizer) 调用的是init 方法，不是__call__ 方法。 __call__ 方法只有在类实例当中使用
+    # 例如 data_collator() 调用的是 __call__ 方法，因为OurDataCollatorWithPadding(tokenizer) 是dataclass修饰的数据类，所以直接调用就行
+    data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(
+        tokenizer=tokenizer, do_mlm=model_args.do_mlm,mlm_probability=data_args.mlm_probability)
+
+    return data_collator
+
+
+def get_train_dataset(data_args, model_args, tokenizer, datasets ):
+
+    # Read soft negative sample 读取软负样本数据
     file_path = data_args.soft_negative_file
     negation = dict()
     f = open(file_path)
@@ -347,147 +411,7 @@ def main():
         line = json.loads(line)
         negation[line[0]] = line[1]
 
-    # Setup logging
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO if is_main_process(training_args.local_rank) else logging.WARN,
-    )
-
-    # Log on each process the small summary:
-    logger.warning(
-        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
-        + f" distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
-    )
-    # Set the verbosity to info of the Transformers logger (on main process only):
-    if is_main_process(training_args.local_rank):
-        transformers.utils.logging.set_verbosity_info()
-        transformers.utils.logging.enable_default_handler()
-        transformers.utils.logging.enable_explicit_format()
-    logger.info("Training/evaluation parameters %s", training_args)
-
-    # Set seed before initializing model.
-    set_seed(training_args.seed)
-
-    # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
-    # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
-    # (the dataset will be downloaded automatically from the datasets Hub
-    #
-    # For CSV/JSON files, this script will use the column called 'text' or the first column. You can easily tweak this
-    # behavior (see below)
-    #
-    # In distributed training, the load_dataset function guarantee that only one local process can concurrently
-    # download the dataset.
-    data_files = {}
-    if data_args.train_file is not None:
-        data_files["train"] = data_args.train_file
-    extension = data_args.train_file.split(".")[-1]
-    if extension == "txt":
-        extension = "text"
-    if extension == "csv":
-        datasets = load_dataset(extension, data_files=data_files, cache_dir="./data/", delimiter="\t" if "tsv" in data_args.train_file else ",")
-    else:
-        datasets = load_dataset(extension, data_files=data_files, cache_dir="./data/")
-
-    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
-
-    # Load pretrained model and tokenizer
-    #
-    # Distributed training:
-    # The .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
-    config_kwargs = {
-        "cache_dir": model_args.cache_dir,
-        "revision": model_args.model_revision,
-        "use_auth_token": True if model_args.use_auth_token else None,
-    }
-    if model_args.config_name:
-        config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
-    elif model_args.model_name_or_path:
-        config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
-    else:
-        config = CONFIG_MAPPING[model_args.model_type]()
-        logger.warning("You are instantiating a new config instance from scratch.")
-
-    tokenizer_kwargs = {
-        "cache_dir": model_args.cache_dir,
-        "use_fast": model_args.use_fast_tokenizer,
-        "revision": model_args.model_revision,
-        "use_auth_token": True if model_args.use_auth_token else None,
-    }
-    if model_args.tokenizer_name:
-        tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
-    elif model_args.model_name_or_path:
-        tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
-        # bert 的 toeknizer bert_tokenizer_name
-        bert_tokenizer_name = "/mnt/nfs-storage-pvc-n28/user_codes/rizeJin/wzl/model-files/bert-base-uncased/"
-        bert_tokenizer = AutoTokenizer.from_pretrained(bert_tokenizer_name, **tokenizer_kwargs)
-    else:
-        raise ValueError(
-            "You are instantiating a new tokenizer from scratch. This is not supported by this script."
-            "You can do it from another script, save it, and load it from here, using --tokenizer_name."
-        )
-
-    mask_dict = {"mask_token": tokenizer.mask_token}
-    tokenizer.add_special_tokens(mask_dict)
-
-    # bert tokenizer 问题
-    if 'roberta' in model_args.model_name_or_path:
-        mask_dict = {"mask_token": bert_tokenizer.mask_token}
-        bert_tokenizer.add_special_tokens(mask_dict)
-
-
-    if model_args.model_name_or_path:
-        # Set hyperparameters of BML loss
-        alpha = 0.1
-        beta = 0.5
-        if 'roberta' in model_args.model_name_or_path:
-            lambda_ = 5e-4
-        else:
-            lambda_ = 1e-3
-        if 'roberta' in model_args.model_name_or_path:
-            model = RobertaForCL.from_pretrained(
-                model_args.model_name_or_path,
-                from_tf=bool(".ckpt" in model_args.model_name_or_path),
-                mask_token_id=tokenizer.mask_token_id,
-                alpha=alpha,
-                beta=beta,
-                lambda_=lambda_,
-                config=config,
-                cache_dir=model_args.cache_dir,
-                revision=model_args.model_revision,
-                use_auth_token=True if model_args.use_auth_token else None,
-                model_args=model_args                  
-            )
-        elif 'bert' in model_args.model_name_or_path:
-            model = BertForCL.from_pretrained(
-                model_args.model_name_or_path,
-                from_tf=bool(".ckpt" in model_args.model_name_or_path),
-                mask_token_id=tokenizer.mask_token_id,
-                pretrain_model_name_or_path=model_args.pretrain_model_name_or_path,
-                alpha=alpha,
-                beta=beta,
-                lambda_=lambda_,
-                config=config,
-                cache_dir=model_args.cache_dir,
-                revision=model_args.model_revision,
-                use_auth_token=True if model_args.use_auth_token else None,
-                model_args=model_args
-            )
-            if model_args.do_mlm:
-                pretrained_model = BertForPreTraining.from_pretrained(model_args.model_name_or_path)
-                model.lm_head.load_state_dict(pretrained_model.cls.predictions.state_dict())
-        else:
-            raise NotImplementedError
-    else:
-        raise NotImplementedError
-        logger.info("Training new model from scratch")
-        model = AutoModelForMaskedLM.from_config(config)
-
-    model.resize_token_embeddings(len(tokenizer))
-
-    # Prepare features
+    # Prepare features 只有
     column_names = datasets["train"].column_names
     sent2_cname = None
     if len(column_names) == 2:
@@ -523,6 +447,7 @@ def main():
             if examples[sent1_cname][idx] is None:
                 examples[sent1_cname][idx] = " "
 
+        # 是否使用软负样本，这部分逻辑有问题，而且  Different_Prompt 和  Different_Prompt_Negation控制的是一个东西
         if Different_Prompt:
             s1 = '''This sentence : " '''
             s1 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(s1))
@@ -567,6 +492,7 @@ def main():
 
             return sent_features
         elif Different_Prompt_Negation:
+            # 使用prompt bert 的方法，具体参考prompt bert的论文
             s1 = '''This sentence : " '''
             s1 = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(s1))
             ss1 = '''This sentence of " '''
@@ -661,125 +587,200 @@ def main():
         else:
             raise NotImplementedError
 
-    if training_args.do_train:
-        # map 数据集到特征
-        train_dataset = datasets["train"].map(
-            prepare_features,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not data_args.overwrite_cache,
+  
+    # map 数据集到特征
+    train_dataset = datasets["train"].map(
+        prepare_features,
+        batched=True,
+        num_proc=data_args.preprocessing_num_workers,
+        remove_columns=column_names,
+        load_from_cache_file=not data_args.overwrite_cache,
+    )
+    return train_dataset
+
+
+def main():
+    # See all possible arguments in src/transformers/training_args.py
+    # or by passing the --help flag to this script.
+    # We now keep distinct sets of args, for a cleaner separation of concerns.
+
+    # 获取 model_args, data_args, training_args 参数，TODO 读取参数部分可以拆分出来
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, OurTrainingArguments))
+    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
+        # If we pass only one argument to the script and it's the path to a json file,
+        # let's parse it to get our arguments.
+        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+    else:
+        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    if (
+        os.path.exists(training_args.output_dir)
+        and os.listdir(training_args.output_dir)
+        and training_args.do_train
+        and not training_args.overwrite_output_dir
+    ):
+        raise ValueError(
+            f"Output directory ({training_args.output_dir}) already exists and is not empty."
+            "Use --overwrite_output_dir to overcome."
         )
 
-    # Data collator
-    @dataclass
-    class OurDataCollatorWithPadding:
+    
 
-        tokenizer: PreTrainedTokenizerBase
-        padding: Union[bool, str, PaddingStrategy] = True
-        max_length: Optional[int] = None
-        pad_to_multiple_of: Optional[int] = None
-        mlm: bool = True
-        mlm_probability: float = data_args.mlm_probability
+    # Setup logging 设置日志
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO if is_main_process(training_args.local_rank) else logging.WARN,
+    )
 
-        def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
-            special_keys = ['input_ids', 'attention_mask', 'token_type_ids', 'mlm_input_ids', 'mlm_labels']
-            bs = len(features)
-            if bs > 0:
-                num_sent = len(features[0]['input_ids'])
-            else:
-                return
-            flat_features = []
-            for feature in features:
-                for i in range(num_sent):
-                    flat_features.append({k: feature[k][i] if k in special_keys else feature[k] for k in feature})
+    # Log on each process the small summary:
+    logger.warning(
+        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
+        + f" distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
+    )
+    # Set the verbosity to info of the Transformers logger (on main process only):
+    # 在多卡中判断是否是主进程，如果是主进程则设置日志等级为info
+    if is_main_process(training_args.local_rank):
+        transformers.utils.logging.set_verbosity_info()
+        transformers.utils.logging.enable_default_handler()
+        transformers.utils.logging.enable_explicit_format()
+    logger.info("Training/evaluation parameters %s", training_args)
 
-            batch = self.tokenizer.pad(
-                flat_features,
-                padding=self.padding,
-                max_length=self.max_length,
-                pad_to_multiple_of=self.pad_to_multiple_of,
-                return_tensors="pt",
+    # Set seed before initializing model.
+    set_seed(training_args.seed)
+
+    # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
+    # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
+    # (the dataset will be downloaded automatically from the datasets Hub
+    #
+    # For CSV/JSON files, this script will use the column called 'text' or the first column. You can easily tweak this
+    # behavior (see below)
+    #
+    # In distributed training, the load_dataset function guarantee that only one local process can concurrently
+    # download the dataset.
+    data_files = {}
+    if data_args.train_file is not None:
+        data_files["train"] = data_args.train_file
+    extension = data_args.train_file.split(".")[-1]
+    if extension == "txt":
+        extension = "text"
+    if extension == "csv":
+        datasets = load_dataset(extension, data_files=data_files, cache_dir="./data/", delimiter="\t" if "tsv" in data_args.train_file else ",")
+    else:
+        datasets = load_dataset(extension, data_files=data_files, cache_dir="./data/")
+
+    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
+    # https://huggingface.co/docs/datasets/loading_datasets.html.
+
+    # Load pretrained model and tokenizer
+    # 加载预训练模型和tokenizer
+    #
+    # Distributed training:
+    # The .from_pretrained methods guarantee that only one local process can concurrently
+    # download model & vocab.
+    config_kwargs = {
+        "cache_dir": model_args.cache_dir,
+        "revision": model_args.model_revision,
+        "use_auth_token": True if model_args.use_auth_token else None,
+    }
+    if model_args.config_name:
+        config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
+    elif model_args.model_name_or_path:
+        config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+    else:
+        config = CONFIG_MAPPING[model_args.model_type]()
+        logger.warning("You are instantiating a new config instance from scratch.")
+
+    tokenizer_kwargs = {
+        "cache_dir": model_args.cache_dir,
+        "use_fast": model_args.use_fast_tokenizer,
+        "revision": model_args.model_revision,
+        "use_auth_token": True if model_args.use_auth_token else None,
+    }
+    if model_args.tokenizer_name:
+        tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)  # 单独指定tokenizer位置
+    elif model_args.model_name_or_path:
+        tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
+        # 这部分应该修改，bert的tokenizer和roberta的tokenizer不一样，TODO 教师模型和学生模型的tokenizer应该分开加载
+        # bert 的 toeknizer bert_tokenizer_name
+        # bert_tokenizer_name = "/mnt/nfs-storage-pvc-n26-20241218/rizejin/zzk/dyncse/sts_model/bert-base-uncased"
+        # bert_tokenizer = AutoTokenizer.from_pretrained(bert_tokenizer_name, **tokenizer_kwargs)
+    else:
+        raise ValueError(
+            "You are instantiating a new tokenizer from scratch. This is not supported by this script."
+            "You can do it from another script, save it, and load it from here, using --tokenizer_name."
+        )
+
+    mask_dict = {"mask_token": tokenizer.mask_token}
+    tokenizer.add_special_tokens(mask_dict)
+
+    # 初始化学生模型对象
+    if model_args.model_name_or_path:
+        # Set hyperparameters of BML loss
+        alpha = 0.1
+        beta = 0.5
+        if 'roberta' in model_args.model_name_or_path:
+            lambda_ = 5e-4
+        else:
+            lambda_ = 1e-3
+        if 'roberta' in model_args.model_name_or_path:
+            model = RobertaForCL.from_pretrained(
+                model_args.model_name_or_path,
+                from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                mask_token_id=tokenizer.mask_token_id,
+                alpha=alpha,
+                beta=beta,
+                lambda_=lambda_,
+                config=config,
+                cache_dir=model_args.cache_dir,
+                revision=model_args.model_revision,
+                use_auth_token=True if model_args.use_auth_token else None,
+                model_args=model_args                  
             )
-            # bert_batch
+        elif 'bert' in model_args.model_name_or_path:
+            model = BertForCL.from_pretrained(
+                model_args.model_name_or_path,
+                from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                mask_token_id=tokenizer.mask_token_id,
+                pretrain_model_name_or_path=model_args.pretrain_model_name_or_path,
+                alpha=alpha,
+                beta=beta,
+                lambda_=lambda_,
+                config=config,
+                cache_dir=model_args.cache_dir,
+                revision=model_args.model_revision,
+                use_auth_token=True if model_args.use_auth_token else None,
+                model_args=model_args
+            )
             if model_args.do_mlm:
-                batch["mlm_input_ids"], batch["mlm_labels"] = self.mask_tokens(batch["input_ids"])
+                pretrained_model = BertForPreTraining.from_pretrained(model_args.model_name_or_path)
+                model.lm_head.load_state_dict(pretrained_model.cls.predictions.state_dict())
+        else:
+            raise NotImplementedError
+    else:
+        raise NotImplementedError
+        logger.info("Training new model from scratch")
+        model = AutoModelForMaskedLM.from_config(config)
 
-            batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
-            if "label" in batch:
-                batch["labels"] = batch["label"]
-                del batch["label"]
-            if "label_ids" in batch:
-                batch["labels"] = batch["label_ids"]
-                del batch["label_ids"]
-
-            return batch
-        
-        def mask_tokens(
-            self, inputs: torch.Tensor, special_tokens_mask: Optional[torch.Tensor] = None
-        ) -> Tuple[torch.Tensor, torch.Tensor]:
-            """
-            Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
-            """
-            inputs = inputs.clone()
-            labels = inputs.clone()
-            # We sample a few tokens in each sequence for MLM training (with probability `self.mlm_probability`)
-            probability_matrix = torch.full(labels.shape, self.mlm_probability)
-            if special_tokens_mask is None:
-                special_tokens_mask = [
-                    self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
-                ]
-                special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool)
-            else:
-                special_tokens_mask = special_tokens_mask.bool()
-
-            probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
-            masked_indices = torch.bernoulli(probability_matrix).bool()
-            labels[~masked_indices] = -100  # We only compute loss on masked tokens
-
-            # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
-            indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
-            inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
-
-            # 10% of the time, we replace masked input tokens with random word
-            indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
-            random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long)
-            inputs[indices_random] = random_words[indices_random]
-
-            # The rest of the time (10% of the time) we keep the masked input tokens unchanged
-            return inputs, labels
-
-    data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(tokenizer)
-    if 'roberta' in model_args.model_name_or_path:
-        data_collator.bert_tokenizer = bert_tokenizer
-        bert_data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(bert_tokenizer)
-
+    model.resize_token_embeddings(len(tokenizer))
+    
+    train_dataset = get_train_dataset(data_args=data_args, model_args=model_args, tokenizer=tokenizer, datasets=datasets) if training_args.do_train else None
+    # Data collator OurDataCollatorWithPadding实例对象
+    data_collator = get_data_collater(data_args=data_args, model_args=model_args, tokenizer=tokenizer)
 
     training_args.first_teacher_name_or_path = model_args.first_teacher_name_or_path
     training_args.second_teacher_name_or_path = model_args.second_teacher_name_or_path
     training_args.tau2 = model_args.tau2
     training_args.alpha_ = model_args.alpha_
 
-    
+    # 训练器，两个教师模型路径只在这里面用到了
     trainer = CLTrainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset if training_args.do_train else None,
+        train_dataset=train_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
     )
-
-    # roberta model
-    # if 'roberta' in model_args.model_name_or_path:
-    #     trainer = CLTrainer(
-    #         model=model,
-    #         args=training_args,
-    #         train_dataset=train_dataset if training_args.do_train else None,
-    #         tokenizer=tokenizer,
-    #         data_collator=data_collator,
-    #         bert_data_collator=bert_data_collator,
-    #         bert_tokenizer=bert_tokenizer
-    #     )
     trainer.model_args = model_args
 
     # Training

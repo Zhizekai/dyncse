@@ -33,7 +33,6 @@ class MLPLayer(nn.Module):
 
         return x
 
-
 class Similarity(nn.Module):
     """
     Dot product or cosine similarity
@@ -47,12 +46,10 @@ class Similarity(nn.Module):
     def forward(self, x, y):
         return self.cos(x, y) / self.temp
 
-
 class Divergence(nn.Module):
     """
     Jensen-Shannon divergence, used to measure ranking consistency between similarity lists obtained from examples with two different dropout masks
     """
-
     def __init__(self, beta_):
         super(Divergence, self).__init__()
         self.kl = nn.KLDivLoss(reduction="batchmean", log_target=True)
@@ -63,7 +60,6 @@ class Divergence(nn.Module):
         p, q = p.view(-1, p.size(-1)), q.view(-1, q.size(-1))
         m = (0.5 * (p + q)).log().clamp(min=self.eps)
         return 0.5 * (self.kl(m, p.log()) + self.kl(m, q.log()))
-
 
 class ListNet(nn.Module):
     """
@@ -82,12 +78,10 @@ class ListNet(nn.Module):
         loss = -(q * p).nansum() / q.nansum()
         return self.gamma_ * loss
 
-
 class ListMLE(nn.Module):
     """
     ListMLE objective for ranking distillation; maximizes the liklihood of the ground truth permutation (sorted indices of the ranking lists obtained from teacher)
     """
-
     def __init__(self, tau, gamma_):
         super(ListMLE, self).__init__()
         self.temp_scaled_sim = Similarity(tau)
