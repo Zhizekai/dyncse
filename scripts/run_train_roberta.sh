@@ -5,11 +5,12 @@
 # --first_teacher_name_or_path $MODEL_DIR/sts_model/rank-encoder-sncse-bert-base-uncased/
 # --second_teacher_name_or_path $MODEL_DIR/sts_model/unsup-simcse-bert-large-uncased/ \
 
-# PROJECT_DIR=/mnt/nfs-storage-pvc-n26-20241218/rizejin/zzk/dyncse/dyncse
-PROJECT_DIR=/data/home/wangzhilan/zzk/dyncse/dyncse
+# 启动命令 
+# 首先进入项目根目录
+# sp240901 bash scripts/run_train_roberta.sh 
 
-# MODEL_DIR=/mnt/nfs-storage-pvc-n26-20241218/rizejin/zzk/dyncse
-MODEL_DIR=/data/home/wangzhilan/zzk/dyncse
+PROJECT_DIR=.
+MODEL_DIR=..
 CHECKPOINT_DIR=checkpoint-2025-04-18
 SEED=61507
 CUDA_VISIBLE_DEVICES=0 

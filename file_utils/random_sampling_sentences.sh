@@ -1,5 +1,7 @@
-DATA_DIR=/home/rizejin/LLM/wxt/RankCSE-master/data
-OUTPUT_DIR=/home/rizejin/LLM/wxt/RankCSE-master/outputs
+# 这个是王鑫涛搞出来的工具
+
+DATA_DIR=./data
+OUTPUT_DIR=./outputs
 
 SEED=42
 python random_sampling_sentences.py \
